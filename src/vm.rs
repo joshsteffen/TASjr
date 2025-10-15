@@ -4,76 +4,12 @@ use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Neg, Not, Sub};
 
 use bytemuck::{Pod, cast, from_bytes, from_bytes_mut, pod_read_unaligned};
 use byteorder::{LittleEndian, ReadBytesExt};
-use num_enum::TryFromPrimitive;
 
-#[derive(Clone, Copy, Debug, TryFromPrimitive)]
-#[repr(u8)]
-pub enum Opcode {
-    Undef,
-    Ignore,
-    Break,
-    Enter,
-    Leave,
-    Call,
-    Push,
-    Pop,
-    Const,
-    Local,
-    Jump,
-    Eq,
-    Ne,
-    Lti,
-    Lei,
-    Gti,
-    Gei,
-    Ltu,
-    Leu,
-    Gtu,
-    Geu,
-    Eqf,
-    Nef,
-    Ltf,
-    Lef,
-    Gtf,
-    Gef,
-    Load1,
-    Load2,
-    Load4,
-    Store1,
-    Store2,
-    Store4,
-    Arg,
-    BlockCopy,
-    Sex8,
-    Sex16,
-    Negi,
-    Add,
-    Sub,
-    Divi,
-    Divu,
-    Modi,
-    Modu,
-    Muli,
-    Mulu,
-    Band,
-    Bor,
-    Bxor,
-    Bcom,
-    Lsh,
-    Rshi,
-    Rshu,
-    Negf,
-    Addf,
-    Subf,
-    Divf,
-    Mulf,
-    Cvif,
-    Cvfi,
-}
+use crate::q3::opcode_t::{Type as opcode_t, *};
 
 #[derive(Debug)]
 pub struct Instruction {
-    pub opcode: Opcode,
+    pub opcode: opcode_t,
     pub arg: u32,
 }
 
@@ -106,30 +42,14 @@ impl Vm {
         reader.seek(SeekFrom::Start(code_offset.into()))?;
         self.code.clear();
         for _ in 0..instruction_count {
-            let opcode = Opcode::try_from_primitive(reader.read_u8()?)?;
+            let opcode = reader.read_u8()? as opcode_t;
             let arg = match opcode {
-                Opcode::Enter
-                | Opcode::Leave
-                | Opcode::Const
-                | Opcode::Local
-                | Opcode::Eq
-                | Opcode::Ne
-                | Opcode::Lti
-                | Opcode::Lei
-                | Opcode::Gti
-                | Opcode::Gei
-                | Opcode::Ltu
-                | Opcode::Leu
-                | Opcode::Gtu
-                | Opcode::Geu
-                | Opcode::Eqf
-                | Opcode::Nef
-                | Opcode::Ltf
-                | Opcode::Lef
-                | Opcode::Gtf
-                | Opcode::Gef
-                | Opcode::BlockCopy => reader.read_u32::<LittleEndian>()?,
-                Opcode::Arg => reader.read_u8()?.into(),
+                OP_ENTER | OP_LEAVE | OP_CONST | OP_LOCAL | OP_EQ | OP_NE | OP_LTI | OP_LEI
+                | OP_GTI | OP_GEI | OP_LTU | OP_LEU | OP_GTU | OP_GEU | OP_EQF | OP_NEF
+                | OP_LTF | OP_LEF | OP_GTF | OP_GEF | OP_BLOCK_COPY => {
+                    reader.read_u32::<LittleEndian>()?
+                }
+                OP_ARG => reader.read_u8()?.into(),
                 _ => 0,
             };
 
@@ -243,12 +163,12 @@ impl Vm {
         // println!("{}: {opcode:?} {arg:#x}", self.pc);
         self.pc += 1;
         match opcode {
-            Opcode::Enter => {
+            OP_ENTER => {
                 let old_stack = self.program_stack;
                 self.program_stack -= arg;
                 self.write_mem(self.program_stack + 4, old_stack);
             }
-            Opcode::Leave => {
+            OP_LEAVE => {
                 self.program_stack += arg;
                 self.pc = self.read_mem(self.program_stack);
                 if self.pc == 0xdeadbeef {
@@ -256,7 +176,7 @@ impl Vm {
                     return Some(ExitReason::Return);
                 }
             }
-            Opcode::Call => {
+            OP_CALL => {
                 let pc = self.op_stack.pop().unwrap();
                 if (pc as i32) < 0 {
                     return Some(ExitReason::Syscall((-(pc as i32) - 1) as u32));
@@ -265,101 +185,101 @@ impl Vm {
                     self.pc = pc;
                 }
             }
-            Opcode::Push => self.op_stack.push(0),
-            Opcode::Pop => {
+            OP_PUSH => self.op_stack.push(0),
+            OP_POP => {
                 self.op_stack.pop().unwrap();
             }
-            Opcode::Const => self.op_stack.push(arg),
-            Opcode::Local => self.op_stack.push(self.program_stack + arg),
-            Opcode::Jump => self.pc = self.op_stack.pop().unwrap(),
-            Opcode::Eq => self.branch_if(arg, u32::eq),
-            Opcode::Ne => self.branch_if(arg, u32::ne),
-            Opcode::Lti => self.branch_if(arg, i32::lt),
-            Opcode::Lei => self.branch_if(arg, i32::le),
-            Opcode::Gti => self.branch_if(arg, i32::gt),
-            Opcode::Gei => self.branch_if(arg, i32::ge),
-            Opcode::Ltu => self.branch_if(arg, u32::lt),
-            Opcode::Leu => self.branch_if(arg, u32::le),
-            Opcode::Gtu => self.branch_if(arg, u32::gt),
-            Opcode::Geu => self.branch_if(arg, u32::ge),
-            Opcode::Eqf => self.branch_if(arg, f32::eq),
-            Opcode::Nef => self.branch_if(arg, f32::ne),
-            Opcode::Ltf => self.branch_if(arg, f32::lt),
-            Opcode::Lef => self.branch_if(arg, f32::le),
-            Opcode::Gtf => self.branch_if(arg, f32::gt),
-            Opcode::Gef => self.branch_if(arg, f32::ge),
-            Opcode::Load1 => {
+            OP_CONST => self.op_stack.push(arg),
+            OP_LOCAL => self.op_stack.push(self.program_stack + arg),
+            OP_JUMP => self.pc = self.op_stack.pop().unwrap(),
+            OP_EQ => self.branch_if(arg, u32::eq),
+            OP_NE => self.branch_if(arg, u32::ne),
+            OP_LTI => self.branch_if(arg, i32::lt),
+            OP_LEI => self.branch_if(arg, i32::le),
+            OP_GTI => self.branch_if(arg, i32::gt),
+            OP_GEI => self.branch_if(arg, i32::ge),
+            OP_LTU => self.branch_if(arg, u32::lt),
+            OP_LEU => self.branch_if(arg, u32::le),
+            OP_GTU => self.branch_if(arg, u32::gt),
+            OP_GEU => self.branch_if(arg, u32::ge),
+            OP_EQF => self.branch_if(arg, f32::eq),
+            OP_NEF => self.branch_if(arg, f32::ne),
+            OP_LTF => self.branch_if(arg, f32::lt),
+            OP_LEF => self.branch_if(arg, f32::le),
+            OP_GTF => self.branch_if(arg, f32::gt),
+            OP_GEF => self.branch_if(arg, f32::ge),
+            OP_LOAD1 => {
                 let address = self.op_stack.pop().unwrap();
                 self.op_stack.push(self.read_mem::<u8>(address) as u32);
             }
-            Opcode::Load2 => {
+            OP_LOAD2 => {
                 let address = self.op_stack.pop().unwrap();
                 self.op_stack.push(self.read_mem::<u16>(address) as u32);
             }
-            Opcode::Load4 => {
+            OP_LOAD4 => {
                 let address = self.op_stack.pop().unwrap();
                 // We have to do an unaligned read here because some qvms don't behave
                 self.op_stack
                     .push(pod_read_unaligned(self.mem_slice(address as usize, 4)));
             }
-            Opcode::Store1 => {
+            OP_STORE1 => {
                 let value = self.op_stack.pop().unwrap() as u8;
                 let address = self.op_stack.pop().unwrap();
                 self.write_mem(address, value);
             }
-            Opcode::Store2 => {
+            OP_STORE2 => {
                 let value = self.op_stack.pop().unwrap() as u16;
                 let address = self.op_stack.pop().unwrap();
                 self.write_mem(address, value);
             }
-            Opcode::Store4 => {
+            OP_STORE4 => {
                 let value = self.op_stack.pop().unwrap();
                 let address = self.op_stack.pop().unwrap();
                 self.write_mem(address, value);
             }
-            Opcode::Arg => {
+            OP_ARG => {
                 let value = self.op_stack.pop().unwrap();
                 self.write_mem(self.program_stack + arg, value);
             }
-            Opcode::BlockCopy => {
+            OP_BLOCK_COPY => {
                 let src = self.op_stack.pop().unwrap() as usize;
                 let dst = self.op_stack.pop().unwrap() as usize;
                 self.data.copy_within(src..src + arg as usize, dst);
             }
-            Opcode::Sex8 => {
+            OP_SEX8 => {
                 let value = self.op_stack.pop().unwrap();
                 self.op_stack.push(value as i8 as i32 as u32);
             }
-            Opcode::Sex16 => {
+            OP_SEX16 => {
                 let value = self.op_stack.pop().unwrap();
                 self.op_stack.push(value as i16 as i32 as u32);
             }
-            Opcode::Negi => self.unary_op(i32::wrapping_neg),
-            Opcode::Add => self.binary_op(u32::wrapping_add),
-            Opcode::Sub => self.binary_op(u32::wrapping_sub),
-            Opcode::Divi => self.binary_op(i32::wrapping_div),
-            Opcode::Divu => self.binary_op(u32::wrapping_div),
-            Opcode::Modi => self.binary_op(i32::wrapping_rem),
-            Opcode::Modu => self.binary_op(u32::wrapping_rem),
-            Opcode::Muli => self.binary_op(i32::wrapping_mul),
-            Opcode::Mulu => self.binary_op(u32::wrapping_mul),
-            Opcode::Band => self.binary_op(u32::bitand),
-            Opcode::Bor => self.binary_op(u32::bitor),
-            Opcode::Bxor => self.binary_op(u32::bitxor),
-            Opcode::Bcom => self.unary_op(u32::not),
-            Opcode::Lsh => self.binary_op(u32::wrapping_shl),
-            Opcode::Rshi => self.binary_op(|a: i32, b: i32| a.wrapping_shr(b as u32)),
-            Opcode::Rshu => self.binary_op(u32::wrapping_shr),
-            Opcode::Negf => self.unary_op(<f32>::neg),
-            Opcode::Addf => self.binary_op(<f32>::add),
-            Opcode::Subf => self.binary_op(<f32>::sub),
-            Opcode::Divf => self.binary_op(<f32>::div),
-            Opcode::Mulf => self.binary_op(<f32>::mul),
-            Opcode::Cvif => {
+            OP_NEGI => self.unary_op(i32::wrapping_neg),
+            OP_ADD => self.binary_op(u32::wrapping_add),
+            OP_SUB => self.binary_op(u32::wrapping_sub),
+            OP_DIVI => self.binary_op(i32::wrapping_div),
+            OP_DIVU => self.binary_op(u32::wrapping_div),
+            OP_MODI => self.binary_op(i32::wrapping_rem),
+            OP_MODU => self.binary_op(u32::wrapping_rem),
+            OP_MULI => self.binary_op(i32::wrapping_mul),
+            OP_MULU => self.binary_op(u32::wrapping_mul),
+            OP_BAND => self.binary_op(u32::bitand),
+            OP_BOR => self.binary_op(u32::bitor),
+            OP_BXOR => self.binary_op(u32::bitxor),
+            OP_BCOM => self.unary_op(u32::not),
+            OP_LSH => self.binary_op(u32::wrapping_shl),
+            OP_RSHI => self.binary_op(|a: i32, b: i32| a.wrapping_shr(b as u32)),
+            OP_RSHU => self.binary_op(u32::wrapping_shr),
+            OP_NEGF => self.unary_op(<f32>::neg),
+            OP_ADDF => self.binary_op(<f32>::add),
+            OP_SUBF => self.binary_op(<f32>::sub),
+            OP_DIVF => self.binary_op(<f32>::div),
+            OP_MULF => self.binary_op(<f32>::mul),
+            OP_CVIF => {
                 let value = self.op_stack.pop().unwrap();
                 self.op_stack.push(cast(value as i32 as f32));
             }
-            Opcode::Cvfi => {
+            OP_CVFI => {
                 let value: f32 = cast(self.op_stack.pop().unwrap());
                 self.op_stack.push(value as i32 as u32);
             }

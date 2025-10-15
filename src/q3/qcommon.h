@@ -56,6 +56,24 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
 /*
 ==============================================================
 
+VIRTUAL MACHINE
+
+==============================================================
+*/
+
+typedef enum {
+	TRAP_MEMSET = 100,
+	TRAP_MEMCPY,
+	TRAP_STRNCPY,
+	TRAP_SIN,
+	TRAP_COS,
+	TRAP_ATAN2,
+	TRAP_SQRT,
+} sharedTraps_t;
+
+/*
+==============================================================
+
 FILESYSTEM
 
 No stdio calls should be used by any part of the game, because
