@@ -1,8 +1,20 @@
-use std::{collections::HashMap, env::args, fs::File, path::Path};
+use std::{
+    collections::HashMap,
+    env::args,
+    ffi::CStr,
+    fs::{self, File},
+    path::Path,
+};
 
-use bytemuck::{Pod, Zeroable, cast};
+use bytemuck::{Zeroable, cast};
 use num_enum::TryFromPrimitive;
-use qvm::{ExitReason, Vm};
+use qvm::{
+    q3::{
+        CM_BoxTrace, CM_EntityString, CM_LoadMap, COM_Parse, Com_Init, PlayerState, Trace, UserCmd,
+        VmCvar,
+    },
+    vm::{ExitReason, Vm},
+};
 
 #[derive(Clone, Copy, Debug)]
 #[repr(u32)]
@@ -84,16 +96,6 @@ enum Syscall {
     Ceil,
 }
 
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-#[repr(C)]
-struct VmCvar {
-    handle: i32,
-    modification_count: i32,
-    value: f32,
-    integer: i32,
-    string: [u8; 256],
-}
-
 #[derive(Default, Debug)]
 struct Cvars {
     cvars: HashMap<String, String>,
@@ -120,163 +122,9 @@ impl Cvars {
     fn register(&mut self, name: String, value: String) -> usize {
         let handle = self.registered.len();
         self.registered.push(name.to_owned());
-        self.cvars.insert(name, value);
+        self.cvars.entry(name).or_insert(value);
         handle
     }
-}
-
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-#[repr(C)]
-struct Trajectory {
-    ty_type: i32,
-    tr_time: i32,
-    tr_duration: i32,
-    tr_base: [f32; 3],
-    tr_delta: [f32; 3],
-}
-
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-#[repr(C)]
-struct EntityState {
-    number: i32,
-    e_type: i32,
-    e_flags: i32,
-    pos: Trajectory,
-    apos: Trajectory,
-    time: i32,
-    time2: i32,
-    origin: [f32; 3],
-    origin2: [f32; 3],
-    angles: [f32; 3],
-    angles2: [f32; 3],
-    other_entity_num: i32,
-    other_entity_num2: i32,
-    ground_entity_num: i32,
-    constant_light: i32,
-    loop_sound: i32,
-    model_index: i32,
-    model_index2: i32,
-    client_num: i32,
-    frame: i32,
-    solid: i32,
-    event: i32,
-    event_parm: i32,
-    powerups: i32,
-    weapon: i32,
-    legs_anim: i32,
-    torso_anim: i32,
-    generic1: i32,
-}
-
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-#[repr(C)]
-struct EntityShared {
-    s: EntityState,
-    linked: i32,
-    link_count: i32,
-    sv_flags: i32,
-    single_client: i32,
-    bmodel: i32,
-    mins: [f32; 3],
-    maxs: [f32; 3],
-    contents: i32,
-    absmin: [f32; 3],
-    absmax: [f32; 3],
-    current_origin: [f32; 3],
-    current_angles: [f32; 3],
-    owner_num: i32,
-}
-
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-#[repr(C)]
-struct SharedEntity {
-    s: EntityState,
-    r: EntityShared,
-}
-
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-#[repr(C)]
-struct PlayerState {
-    command_time: i32,
-    pm_type: i32,
-    bob_cycle: i32,
-    pm_flags: i32,
-    pm_time: i32,
-    origin: [f32; 3],
-    velocity: [f32; 3],
-    weapon_time: i32,
-    gravity: i32,
-    speed: i32,
-    delta_angles: [i32; 3],
-    ground_entity_num: i32,
-    legs_timer: i32,
-    legs_anim: i32,
-    torso_timer: i32,
-    torso_anim: i32,
-    movement_dir: i32,
-    grapple_point: [f32; 3],
-    e_flags: i32,
-    event_sequence: i32,
-    events: [i32; 2],
-    event_parms: [i32; 2],
-    external_event: i32,
-    external_event_parm: i32,
-    external_event_time: i32,
-    client_num: i32,
-    weapon: i32,
-    weapon_state: i32,
-    view_angles: [f32; 3],
-    view_height: i32,
-    damage_event: i32,
-    damage_yaw: i32,
-    damage_pitch: i32,
-    damage_count: i32,
-    stats: [i32; 16],
-    persistant: [i32; 16],
-    powerups: [i32; 16],
-    ammo: [i32; 16],
-    generic1: i32,
-    loop_sound: i32,
-    jumppad_ent: i32,
-    ping: i32,
-    pmove_framecount: i32,
-    jumppad_frame: i32,
-    entity_event_sequence: i32,
-}
-
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-#[repr(C)]
-struct UserCmd {
-    server_time: i32,
-    angles: [i32; 3],
-    buttons: i32,
-    weapon: u8,
-    forward_move: i8,
-    right_move: i8,
-    up_move: i8,
-}
-
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-#[repr(C)]
-struct CPlane {
-    normal: [f32; 3],
-    dist: f32,
-    type_: u8,
-    sign_bits: u8,
-    pad: [u8; 2],
-}
-
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-#[repr(C)]
-struct Trace {
-    all_solid: i32,
-    start_solid: i32,
-    fraction: f32,
-    end_pos: [f32; 3],
-    plane: CPlane,
-    surface_flags: i32,
-    contents: i32,
-    entity_num: i32,
 }
 
 struct Game {
@@ -291,32 +139,20 @@ struct Game {
     sizeof_game_client: u32,
 
     // TODO: this can be part of CM_ stuff later
-    entity_tokens: Box<dyn Iterator<Item = &'static str>>,
+    entity_tokens: Box<dyn Iterator<Item = String>>,
 
     user_cmd: UserCmd,
 }
 
 impl Game {
-    fn new<P: AsRef<Path>>(vm_path: P) -> Self {
+    fn new<P: AsRef<Path>>(vm_path: P, entity_tokens: Vec<String>) -> Self {
         let cvars = Cvars::default();
 
         let mut vm = Vm::default();
         let f = File::open(vm_path).unwrap();
         vm.load(f).unwrap();
 
-        let entity_tokens = Box::new(
-            [
-                "{",
-                "classname",
-                "worldspawn",
-                "}",
-                "{",
-                "classname",
-                "info_player_start",
-                "}",
-            ]
-            .into_iter(),
-        );
+        let entity_tokens = Box::new(entity_tokens.into_iter());
 
         Self {
             cvars,
@@ -432,7 +268,7 @@ impl Game {
         match syscall {
             Syscall::Print => {
                 let s = self.vm.read_cstr(self.vm.read_arg(0)).to_string_lossy();
-                println!("{s}");
+                eprintln!("{s}");
                 self.vm.set_result(0);
             }
             Syscall::Error => {
@@ -456,7 +292,6 @@ impl Game {
                     .to_string();
                 let flags = self.vm.read_arg::<u32>(3);
                 eprintln!("CvarRegister {name} {default:?} {flags}");
-                self.cvars.set(&name, default.to_string());
                 let handle = self.cvars.register(name.to_owned(), default.to_owned());
                 if vm_cvar != 0 {
                     let vm_cvar = self.vm.cast_mem_mut::<VmCvar>(vm_cvar);
@@ -539,22 +374,24 @@ impl Game {
                 self.vm.write_mem::<u8>(self.vm.read_arg(1), 0);
                 self.vm.set_result(0);
             }
+            Syscall::SetBrushModel => {
+                eprintln!("SetBrushModel");
+                self.vm.set_result(0);
+            }
             Syscall::Trace => {
                 let results = self.vm.read_arg::<u32>(0);
                 let start = self.vm.read_mem::<[f32; 3]>(self.vm.read_arg(1));
                 let mins = self.vm.read_mem::<[f32; 3]>(self.vm.read_arg(2));
                 let maxs = self.vm.read_mem::<[f32; 3]>(self.vm.read_arg(3));
                 let end = self.vm.read_mem::<[f32; 3]>(self.vm.read_arg(4));
-                let pass_entity_num = self.vm.read_arg::<i32>(5);
+                let _pass_entity_num = self.vm.read_arg::<i32>(5);
                 let content_mask = self.vm.read_arg::<i32>(6);
                 let capsule = self.vm.read_arg::<i32>(7);
                 let trace = self.vm.cast_mem_mut::<Trace>(results);
                 *trace = Trace::zeroed();
-                trace.fraction = 1.0;
-                trace.end_pos = end;
-                eprintln!(
-                    "Trace {results} {start:?} {mins:?} {maxs:?} {end:?} {pass_entity_num} {content_mask} {capsule}"
-                );
+                unsafe {
+                    CM_BoxTrace(trace, &start, &end, &mins, &maxs, 0, content_mask, capsule);
+                }
                 self.vm.set_result(0);
             }
             Syscall::PointContents => {
@@ -601,15 +438,15 @@ impl Game {
                 let dst = self.vm.read_arg::<u32>(0) as usize;
                 let value = self.vm.read_arg::<u8>(1);
                 let size = self.vm.read_arg::<u32>(2) as usize;
-                self.vm.set_result(dst as u32);
                 self.vm.data[dst..][..size].fill(value);
+                self.vm.set_result(0);
             }
             Syscall::Memcpy => {
                 let dst = self.vm.read_arg::<u32>(0) as usize;
                 let src = self.vm.read_arg::<u32>(1) as usize;
                 let size = self.vm.read_arg::<u32>(2) as usize;
-                self.vm.set_result(dst as u32);
                 self.vm.data.copy_within(src..src + size, dst);
+                self.vm.set_result(0);
             }
             Syscall::Sin => {
                 self.vm.set_result(cast(self.vm.read_arg::<f32>(0).sin()));
@@ -643,15 +480,32 @@ impl Game {
 }
 
 fn main() {
-    let mut game = Game::new(args().nth(1).unwrap());
+    let buf = fs::read(args().nth(2).unwrap()).unwrap();
+    let mut entity_tokens = vec![];
+    unsafe {
+        Com_Init();
+        CM_LoadMap(c"q3dm6".as_ptr(), buf.as_ptr(), buf.len() as i32);
+        let mut p = CM_EntityString();
+        loop {
+            let s = COM_Parse(&mut p);
+            if s.is_null() || *s == 0 {
+                break;
+            }
+            entity_tokens.push(CStr::from_ptr(s).to_str().unwrap().to_string());
+        }
+    }
+
+    let mut game = Game::new(args().nth(1).unwrap(), entity_tokens);
+    game.cvars.set("dedicated", "1".to_string());
     game.g_init(0, 0, false);
     game.g_run_frame(0);
     game.g_client_connect(0, true, false).unwrap();
     game.g_client_begin(0);
+    let start = std::time::Instant::now();
     let mut t = 8;
-    for _ in 0..250 {
+    while t < 250 {
         let ps = game.vm.cast_mem_mut::<PlayerState>(game.clients);
-        println!("{:?}", ps.origin);
+        println!("{} {} {}", ps.origin[0], ps.origin[1], ps.origin[2]);
 
         game.user_cmd.server_time = t;
         game.user_cmd.forward_move = 127;
@@ -659,4 +513,6 @@ fn main() {
         game.g_run_frame(t);
         t += 8;
     }
+    let end = start.elapsed();
+    eprintln!("{end:?}");
 }

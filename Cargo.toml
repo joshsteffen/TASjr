@@ -7,3 +7,6 @@ edition = "2024"
 bytemuck = { version = "1.24.0", features = ["derive"] }
 byteorder = "1.5.0"
 num_enum = "0.7.4"
+
+[build-dependencies]
+cc = "1.2.41"
