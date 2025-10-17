@@ -4,8 +4,8 @@ use bytemuck::{Zeroable, cast, cast_slice_mut};
 
 use crate::{
     q3::{
-        CM_BoxTrace, gameExport_t::*, gameImport_t::*, qboolean, sharedTraps_t::*, trace_t,
-        usercmd_t, vmCvar_t,
+        CM_BoxTrace, CM_PointContents, ENTITYNUM_NONE, ENTITYNUM_WORLD, gameExport_t::*,
+        gameImport_t::*, sharedTraps_t::*, trace_t, usercmd_t, vmCvar_t,
     },
     vm::{ExitReason, Vm},
 };
@@ -18,25 +18,32 @@ pub struct Cvars {
 
 impl Cvars {
     pub fn get_str(&self, name: &str) -> &str {
-        self.cvars.get(name).map(String::as_str).unwrap_or("")
+        self.cvars
+            .get(&name.to_ascii_lowercase())
+            .map(String::as_str)
+            .unwrap_or("")
     }
 
     pub fn get_i32(&self, name: &str) -> i32 {
-        self.get_str(name).parse().unwrap_or_default()
+        self.get_str(&name.to_ascii_lowercase())
+            .parse()
+            .unwrap_or_default()
     }
 
     pub fn get_f32(&self, name: &str) -> f32 {
-        self.get_str(name).parse().unwrap_or_default()
+        self.get_str(&name.to_ascii_lowercase())
+            .parse()
+            .unwrap_or_default()
     }
 
     pub fn set(&mut self, name: &str, value: String) {
-        self.cvars.insert(name.to_string(), value);
+        self.cvars.insert(name.to_ascii_lowercase(), value);
     }
 
     pub fn register(&mut self, name: String, value: String) -> usize {
         let handle = self.registered.len();
-        self.registered.push(name.to_owned());
-        self.cvars.entry(name).or_insert(value);
+        self.registered.push(name.to_ascii_lowercase());
+        self.cvars.entry(name.to_ascii_lowercase()).or_insert(value);
         handle
     }
 }
@@ -147,7 +154,7 @@ impl Game {
         match syscall {
             G_PRINT => {
                 let s = self.vm.read_cstr(self.vm.read_arg(0)).to_string_lossy();
-                eprintln!("{s}");
+                println!("{s}");
                 self.vm.set_result(0);
             }
             G_ERROR => {
@@ -265,7 +272,6 @@ impl Game {
                 let end = self.vm.read_mem::<[f32; 3]>(self.vm.read_arg(4));
                 let _pass_entity_num = self.vm.read_arg::<i32>(5);
                 let content_mask = self.vm.read_arg::<i32>(6);
-                let capsule = self.vm.read_arg::<qboolean>(7);
                 let trace = self.vm.cast_mem_mut::<trace_t>(results);
                 *trace = trace_t::zeroed();
                 unsafe {
@@ -277,14 +283,22 @@ impl Game {
                         maxs.as_ptr(),
                         0,
                         content_mask,
-                        capsule,
+                        0,
                     );
                 }
+                trace.entityNum = if trace.fraction == 1.0 {
+                    ENTITYNUM_NONE
+                } else {
+                    ENTITYNUM_WORLD
+                } as i32;
                 self.vm.set_result(0);
             }
             G_POINT_CONTENTS => {
                 eprintln!("G_POINT_CONTENTS");
-                self.vm.set_result(0);
+                let p = self.vm.read_mem::<[f32; 3]>(self.vm.read_arg(0));
+                unsafe {
+                    self.vm.set_result(CM_PointContents(p.as_ptr(), 0) as u32);
+                }
             }
             G_LINKENTITY => {
                 eprintln!("G_LINKENTITY");
