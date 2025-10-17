@@ -337,6 +337,9 @@ impl Game {
                     .for_each(|x| *x = x.round_ties_even());
                 self.vm.set_result(0);
             }
+            G_CEIL => {
+                self.vm.set_result(cast(self.vm.read_arg::<f32>(0).ceil()));
+            }
             TRAP_MEMSET => {
                 let dst = self.vm.read_arg::<u32>(0) as usize;
                 let value = self.vm.read_arg::<u8>(1);
