@@ -6,7 +6,8 @@ edition = "2024"
 [dependencies]
 bytemuck = { version = "1.24.0", features = ["derive"] }
 byteorder = "1.5.0"
-num_enum = "0.7.4"
+clap = { version = "4.5.49", features = ["derive"] }
+zip = { version = "6.0.0", default-features = false, features = ["deflate"] }
 
 [build-dependencies]
 bindgen = "0.72.1"

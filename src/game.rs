@@ -1,8 +1,9 @@
-use std::{collections::HashMap, fs::File, path::Path};
+use std::{collections::HashMap, path::Path};
 
 use bytemuck::{Zeroable, cast, cast_slice_mut};
 
 use crate::{
+    fs::Fs,
     q3::{
         CM_BoxTrace, CM_PointContents, ENTITYNUM_NONE, ENTITYNUM_WORLD, gameExport_t::*,
         gameImport_t::*, sharedTraps_t::*, trace_t, usercmd_t, vmCvar_t,
@@ -66,11 +67,11 @@ pub struct Game {
 }
 
 impl Game {
-    pub fn new<P: AsRef<Path>>(vm_path: P, entity_tokens: Vec<String>) -> Self {
+    pub fn new<P: AsRef<Path>>(fs: &Fs, vm_path: P, entity_tokens: Vec<String>) -> Self {
         let cvars = Cvars::default();
 
         let mut vm = Vm::default();
-        let f = File::open(vm_path).unwrap();
+        let f = fs.open(vm_path).unwrap();
         vm.load(f).unwrap();
 
         let entity_tokens = Box::new(entity_tokens.into_iter());
