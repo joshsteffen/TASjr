@@ -14,9 +14,73 @@ pub struct Instruction {
 }
 
 #[derive(Default)]
+pub struct Memory {
+    data: Vec<u8>,
+}
+
+impl Memory {
+    pub fn new(data: Vec<u8>) -> Self {
+        Self { data }
+    }
+
+    pub fn slice(&self, address: usize, size: usize) -> &[u8] {
+        &self.data[address..][..size]
+    }
+
+    pub fn slice_mut(&mut self, address: usize, size: usize) -> &mut [u8] {
+        &mut self.data[address..][..size]
+    }
+
+    pub fn cast<T: Pod>(&self, address: u32) -> &T {
+        from_bytes(self.slice(address as usize, size_of::<T>()))
+    }
+
+    pub fn cast_mut<T: Pod>(&mut self, address: u32) -> &mut T {
+        from_bytes_mut(self.slice_mut(address as usize, size_of::<T>()))
+    }
+
+    pub fn read<T: Pod>(&self, address: u32) -> T {
+        *self.cast(address)
+    }
+
+    pub fn write<T: Pod>(&mut self, address: u32, value: T) {
+        *self.cast_mut(address) = value;
+    }
+
+    pub fn cstr(&self, address: u32) -> &CStr {
+        CStr::from_bytes_until_nul(&self.data[address as usize..]).unwrap()
+    }
+
+    pub fn memset(&mut self, dst: u32, value: u8, size: u32) {
+        let (dst, size) = (dst as usize, size as usize);
+        self.data[dst..][..size].fill(value);
+    }
+
+    pub fn memcpy(&mut self, dst: u32, src: u32, size: u32) {
+        let (dst, src, size) = (dst as usize, src as usize, size as usize);
+        self.data.copy_within(src..src + size, dst);
+    }
+
+    pub fn strncpy(&mut self, dst: u32, src: u32, size: u32) {
+        let (mut dst, mut src, mut size) = (dst as usize, src as usize, size as usize);
+        while size != 0 && self.data[src] != 0 {
+            self.data[dst] = self.data[src];
+            src += 1;
+            dst += 1;
+            size -= 1;
+        }
+        while size != 0 {
+            self.data[dst] = 0;
+            dst += 1;
+            size -= 1;
+        }
+    }
+}
+
+#[derive(Default)]
 pub struct Vm {
     pub code: Vec<Instruction>,
-    pub data: Vec<u8>,
+    pub memory: Memory,
     pub pc: u32,
     pub program_stack: u32,
     pub op_stack: Vec<u32>,
@@ -57,50 +121,23 @@ impl Vm {
         }
 
         reader.seek(SeekFrom::Start(data_offset.into()))?;
-        self.data.resize(data_length + lit_length + bss_length, 0);
-        reader.read_exact(&mut self.data[..data_length + lit_length])?;
+        let mut data = vec![0; data_length + lit_length + bss_length];
+        reader.read_exact(&mut data[..data_length + lit_length])?;
 
         self.pc = 0;
-        self.program_stack = self.data.len() as u32;
+        self.program_stack = data.len() as u32;
         self.op_stack.clear();
+        self.memory = Memory::new(data);
 
         Ok(())
     }
 
-    pub fn mem_slice(&self, address: usize, size: usize) -> &[u8] {
-        &self.data[address..][..size]
-    }
-
-    pub fn mem_slice_mut(&mut self, address: usize, size: usize) -> &mut [u8] {
-        &mut self.data[address..][..size]
-    }
-
-    pub fn cast_mem<T: Pod>(&self, address: u32) -> &T {
-        from_bytes(self.mem_slice(address as usize, size_of::<T>()))
-    }
-
-    pub fn cast_mem_mut<T: Pod>(&mut self, address: u32) -> &mut T {
-        from_bytes_mut(self.mem_slice_mut(address as usize, size_of::<T>()))
-    }
-
-    pub fn read_mem<T: Pod>(&self, address: u32) -> T {
-        *self.cast_mem(address)
-    }
-
-    pub fn write_mem<T: Pod>(&mut self, address: u32, value: T) {
-        *self.cast_mem_mut(address) = value;
-    }
-
     pub fn read_local<T: Pod>(&self, offset: u32) -> T {
-        self.read_mem(self.program_stack + offset)
+        self.memory.read(self.program_stack + offset)
     }
 
     pub fn read_arg<T: Pod>(&self, n: u32) -> T {
         self.read_local(n * 4 + 8)
-    }
-
-    pub fn read_cstr(&self, address: u32) -> &CStr {
-        CStr::from_bytes_until_nul(&self.data[address as usize..]).unwrap()
     }
 
     fn branch_if<F, T>(&mut self, target: u32, f: F)
@@ -138,11 +175,11 @@ impl Vm {
         let old_stack = self.program_stack;
         for &arg in args.iter().rev() {
             self.program_stack -= 4;
-            self.write_mem::<u32>(self.program_stack, arg);
+            self.memory.write::<u32>(self.program_stack, arg);
         }
         self.program_stack -= 8;
-        self.write_mem::<u32>(self.program_stack + 4, old_stack);
-        self.write_mem::<u32>(self.program_stack, 0xdeadbeef);
+        self.memory.write::<u32>(self.program_stack + 4, old_stack);
+        self.memory.write::<u32>(self.program_stack, 0xdeadbeef);
         self.pc = 0;
     }
 
@@ -166,13 +203,13 @@ impl Vm {
             OP_ENTER => {
                 let old_stack = self.program_stack;
                 self.program_stack -= arg;
-                self.write_mem(self.program_stack + 4, old_stack);
+                self.memory.write(self.program_stack + 4, old_stack);
             }
             OP_LEAVE => {
                 self.program_stack += arg;
-                self.pc = self.read_mem(self.program_stack);
+                self.pc = self.memory.read(self.program_stack);
                 if self.pc == 0xdeadbeef {
-                    self.program_stack = self.read_mem(self.program_stack + 4);
+                    self.program_stack = self.memory.read(self.program_stack + 4);
                     return Some(ExitReason::Return);
                 }
             }
@@ -181,7 +218,7 @@ impl Vm {
                 if (pc as i32) < 0 {
                     return Some(ExitReason::Syscall((-(pc as i32) - 1) as u32));
                 } else {
-                    self.write_mem(self.program_stack, self.pc);
+                    self.memory.write(self.program_stack, self.pc);
                     self.pc = pc;
                 }
             }
@@ -210,41 +247,41 @@ impl Vm {
             OP_GEF => self.branch_if(arg, f32::ge),
             OP_LOAD1 => {
                 let address = self.op_stack.pop().unwrap();
-                self.op_stack.push(self.read_mem::<u8>(address) as u32);
+                self.op_stack.push(self.memory.read::<u8>(address) as u32);
             }
             OP_LOAD2 => {
                 let address = self.op_stack.pop().unwrap();
-                self.op_stack.push(self.read_mem::<u16>(address) as u32);
+                self.op_stack.push(self.memory.read::<u16>(address) as u32);
             }
             OP_LOAD4 => {
                 let address = self.op_stack.pop().unwrap();
                 // We have to do an unaligned read here because some qvms don't behave
                 self.op_stack
-                    .push(pod_read_unaligned(self.mem_slice(address as usize, 4)));
+                    .push(pod_read_unaligned(self.memory.slice(address as usize, 4)));
             }
             OP_STORE1 => {
                 let value = self.op_stack.pop().unwrap() as u8;
                 let address = self.op_stack.pop().unwrap();
-                self.write_mem(address, value);
+                self.memory.write(address, value);
             }
             OP_STORE2 => {
                 let value = self.op_stack.pop().unwrap() as u16;
                 let address = self.op_stack.pop().unwrap();
-                self.write_mem(address, value);
+                self.memory.write(address, value);
             }
             OP_STORE4 => {
                 let value = self.op_stack.pop().unwrap();
                 let address = self.op_stack.pop().unwrap();
-                self.write_mem(address, value);
+                self.memory.write(address, value);
             }
             OP_ARG => {
                 let value = self.op_stack.pop().unwrap();
-                self.write_mem(self.program_stack + arg, value);
+                self.memory.write(self.program_stack + arg, value);
             }
             OP_BLOCK_COPY => {
-                let src = self.op_stack.pop().unwrap() as usize;
-                let dst = self.op_stack.pop().unwrap() as usize;
-                self.data.copy_within(src..src + arg as usize, dst);
+                let src = self.op_stack.pop().unwrap();
+                let dst = self.op_stack.pop().unwrap();
+                self.memory.memcpy(dst, src, arg);
             }
             OP_SEX8 => {
                 let value = self.op_stack.pop().unwrap();

@@ -133,7 +133,7 @@ impl Game {
             0,
         ]);
         if result != 0 {
-            Err(self.vm.read_cstr(result).to_string_lossy().into())
+            Err(self.vm.memory.cstr(result).to_string_lossy().into())
         } else {
             Ok(())
         }
@@ -154,12 +154,12 @@ impl Game {
     fn handle_syscall(&mut self, syscall: u32) {
         match syscall {
             G_PRINT => {
-                let s = self.vm.read_cstr(self.vm.read_arg(0)).to_string_lossy();
+                let s = self.vm.memory.cstr(self.vm.read_arg(0)).to_string_lossy();
                 println!("{s}");
                 self.vm.set_result(0);
             }
             G_ERROR => {
-                let s = self.vm.read_cstr(self.vm.read_arg(0)).to_string_lossy();
+                let s = self.vm.memory.cstr(self.vm.read_arg(0)).to_string_lossy();
                 panic!("{s}");
             }
             G_MILLISECONDS => {
@@ -169,19 +169,21 @@ impl Game {
                 let vm_cvar = self.vm.read_arg::<u32>(0);
                 let name = self
                     .vm
-                    .read_cstr(self.vm.read_arg(1))
+                    .memory
+                    .cstr(self.vm.read_arg(1))
                     .to_string_lossy()
                     .to_string();
                 let default = self
                     .vm
-                    .read_cstr(self.vm.read_arg(2))
+                    .memory
+                    .cstr(self.vm.read_arg(2))
                     .to_string_lossy()
                     .to_string();
                 let flags = self.vm.read_arg::<u32>(3);
                 eprintln!("G_CVAR_REGISTER {name} {default:?} {flags}");
                 let handle = self.cvars.register(name.to_owned(), default.to_owned());
                 if vm_cvar != 0 {
-                    let vm_cvar = self.vm.cast_mem_mut::<vmCvar_t>(vm_cvar);
+                    let vm_cvar = self.vm.memory.cast_mut::<vmCvar_t>(vm_cvar);
                     vm_cvar.handle = handle as i32;
                     vm_cvar.value = self.cvars.get_f32(&name);
                     vm_cvar.integer = self.cvars.get_i32(&name);
@@ -192,28 +194,28 @@ impl Game {
                 self.vm.set_result(0);
             }
             G_CVAR_UPDATE => {
-                let vm_cvar = self.vm.cast_mem_mut::<vmCvar_t>(self.vm.read_arg(0));
+                let vm_cvar = self.vm.memory.cast_mut::<vmCvar_t>(self.vm.read_arg(0));
                 let name = &self.cvars.registered[vm_cvar.handle as usize];
                 eprintln!("G_CVAR_UPDATE {name}");
                 self.vm.set_result(0);
             }
             G_CVAR_SET => {
-                let name = self.vm.read_cstr(self.vm.read_arg(0)).to_string_lossy();
-                let value = self.vm.read_cstr(self.vm.read_arg(1)).to_string_lossy();
+                let name = self.vm.memory.cstr(self.vm.read_arg(0)).to_string_lossy();
+                let value = self.vm.memory.cstr(self.vm.read_arg(1)).to_string_lossy();
                 eprintln!("G_CVAR_SET {name} {value}");
                 self.cvars.set(&name, value.to_string());
                 self.vm.set_result(0);
             }
             G_CVAR_VARIABLE_INTEGER_VALUE => {
-                let name = self.vm.read_cstr(self.vm.read_arg(0)).to_string_lossy();
+                let name = self.vm.memory.cstr(self.vm.read_arg(0)).to_string_lossy();
                 self.vm.set_result(self.cvars.get_i32(&name) as u32);
             }
             G_CVAR_VARIABLE_STRING_BUFFER => {
-                let name = self.vm.read_cstr(self.vm.read_arg(0)).to_string_lossy();
+                let name = self.vm.memory.cstr(self.vm.read_arg(0)).to_string_lossy();
                 let buffer = self.vm.read_arg::<u32>(1);
                 let _size = self.vm.read_arg::<u32>(2) as usize;
                 eprintln!("G_CVAR_VARIABLE_STRING_BUFFER {name}");
-                self.vm.write_mem::<u8>(buffer, 0);
+                self.vm.memory.write::<u8>(buffer, 0);
                 self.vm.set_result(0);
             }
             G_FS_FOPEN_FILE => {
@@ -238,13 +240,13 @@ impl Game {
             }
             G_SEND_SERVER_COMMAND => {
                 let client_num = self.vm.read_arg::<i32>(0);
-                let text = self.vm.read_cstr(self.vm.read_arg(1)).to_string_lossy();
+                let text = self.vm.memory.cstr(self.vm.read_arg(1)).to_string_lossy();
                 eprintln!("G_SEND_SERVER_COMMAND {client_num} {text}");
                 self.vm.set_result(0);
             }
             G_SET_CONFIGSTRING => {
                 let num = self.vm.read_arg::<u32>(0);
-                let string = self.vm.read_cstr(self.vm.read_arg(1)).to_string_lossy();
+                let string = self.vm.memory.cstr(self.vm.read_arg(1)).to_string_lossy();
                 eprintln!("G_SET_CONFIGSTRING {num} {string}");
                 self.vm.set_result(0);
             }
@@ -252,13 +254,13 @@ impl Game {
                 let num = self.vm.read_arg::<u32>(0);
                 let buffer = self.vm.read_arg::<u32>(1);
                 let _size = self.vm.read_arg::<u32>(2) as usize;
-                self.vm.write_mem::<u8>(buffer, 0);
+                self.vm.memory.write::<u8>(buffer, 0);
                 eprintln!("G_GET_CONFIGSTRING {num}");
                 self.vm.set_result(0);
             }
             G_GET_USERINFO => {
                 eprintln!("G_GET_USERINFO");
-                self.vm.write_mem::<u8>(self.vm.read_arg(1), 0);
+                self.vm.memory.write::<u8>(self.vm.read_arg(1), 0);
                 self.vm.set_result(0);
             }
             G_SET_BRUSH_MODEL => {
@@ -267,13 +269,13 @@ impl Game {
             }
             G_TRACE => {
                 let results = self.vm.read_arg::<u32>(0);
-                let start = self.vm.read_mem::<[f32; 3]>(self.vm.read_arg(1));
-                let mins = self.vm.read_mem::<[f32; 3]>(self.vm.read_arg(2));
-                let maxs = self.vm.read_mem::<[f32; 3]>(self.vm.read_arg(3));
-                let end = self.vm.read_mem::<[f32; 3]>(self.vm.read_arg(4));
+                let start = self.vm.memory.read::<[f32; 3]>(self.vm.read_arg(1));
+                let mins = self.vm.memory.read::<[f32; 3]>(self.vm.read_arg(2));
+                let maxs = self.vm.memory.read::<[f32; 3]>(self.vm.read_arg(3));
+                let end = self.vm.memory.read::<[f32; 3]>(self.vm.read_arg(4));
                 let _pass_entity_num = self.vm.read_arg::<i32>(5);
                 let content_mask = self.vm.read_arg::<i32>(6);
-                let trace = self.vm.cast_mem_mut::<trace_t>(results);
+                let trace = self.vm.memory.cast_mut::<trace_t>(results);
                 *trace = trace_t::zeroed();
                 unsafe {
                     CM_BoxTrace(
@@ -296,7 +298,7 @@ impl Game {
             }
             G_POINT_CONTENTS => {
                 eprintln!("G_POINT_CONTENTS");
-                let p = self.vm.read_mem::<[f32; 3]>(self.vm.read_arg(0));
+                let p = self.vm.memory.read::<[f32; 3]>(self.vm.read_arg(0));
                 unsafe {
                     self.vm.set_result(CM_PointContents(p.as_ptr(), 0) as u32);
                 }
@@ -314,7 +316,7 @@ impl Game {
                 self.vm.set_result(0);
             }
             G_GET_USERCMD => {
-                self.vm.write_mem(self.vm.read_arg(1), self.user_cmd);
+                self.vm.memory.write(self.vm.read_arg(1), self.user_cmd);
                 self.vm.set_result(0);
             }
             G_GET_ENTITY_TOKEN => {
@@ -322,9 +324,10 @@ impl Game {
                     let token = token.as_bytes();
                     let buffer = self.vm.read_arg::<u32>(0) as usize;
                     let size = self.vm.read_arg::<u32>(1) as usize;
-                    let size = (size - 1).min(token.len());
-                    self.vm.data[buffer..][..size].copy_from_slice(&token[..size]);
-                    self.vm.data[buffer..][size] = 0;
+                    let size = size.min(token.len() + 1);
+                    let slice = self.vm.memory.slice_mut(buffer, size);
+                    slice[..size - 1].copy_from_slice(&token[..size - 1]);
+                    slice[size - 1] = 0;
                     self.vm.set_result(1);
                 } else {
                     self.vm.set_result(0);
@@ -332,7 +335,8 @@ impl Game {
             }
             G_SNAPVECTOR => {
                 self.vm
-                    .cast_mem_mut::<[f32; 3]>(self.vm.read_arg(0))
+                    .memory
+                    .cast_mut::<[f32; 3]>(self.vm.read_arg(0))
                     .iter_mut()
                     .for_each(|x| *x = x.round_ties_even());
                 self.vm.set_result(0);
@@ -341,17 +345,19 @@ impl Game {
                 self.vm.set_result(cast(self.vm.read_arg::<f32>(0).ceil()));
             }
             TRAP_MEMSET => {
-                let dst = self.vm.read_arg::<u32>(0) as usize;
-                let value = self.vm.read_arg::<u8>(1);
-                let size = self.vm.read_arg::<u32>(2) as usize;
-                self.vm.data[dst..][..size].fill(value);
+                self.vm.memory.memset(
+                    self.vm.read_arg(0),
+                    self.vm.read_arg(1),
+                    self.vm.read_arg(2),
+                );
                 self.vm.set_result(0);
             }
             TRAP_MEMCPY => {
-                let dst = self.vm.read_arg::<u32>(0) as usize;
-                let src = self.vm.read_arg::<u32>(1) as usize;
-                let size = self.vm.read_arg::<u32>(2) as usize;
-                self.vm.data.copy_within(src..src + size, dst);
+                self.vm.memory.memcpy(
+                    self.vm.read_arg(0),
+                    self.vm.read_arg(1),
+                    self.vm.read_arg(2),
+                );
                 self.vm.set_result(0);
             }
             TRAP_SIN => {
@@ -364,21 +370,11 @@ impl Game {
                 self.vm.set_result(cast(self.vm.read_arg::<f32>(0).sqrt()));
             }
             TRAP_STRNCPY => {
-                let mut dst = self.vm.read_arg::<u32>(0) as usize;
-                let mut src = self.vm.read_arg::<u32>(1) as usize;
-                let mut size = self.vm.read_arg::<u32>(2) as usize;
-                self.vm.set_result(dst as u32);
-                while size != 0 && self.vm.data[src] != 0 {
-                    self.vm.data[dst] = self.vm.data[src];
-                    src += 1;
-                    dst += 1;
-                    size -= 1;
-                }
-                while size != 0 {
-                    self.vm.data[dst] = 0;
-                    dst += 1;
-                    size -= 1;
-                }
+                let dst = self.vm.read_arg(0);
+                self.vm
+                    .memory
+                    .strncpy(dst, self.vm.read_arg(1), self.vm.read_arg(2));
+                self.vm.set_result(dst);
             }
             _ => unimplemented!("syscall {syscall:?}"),
         };

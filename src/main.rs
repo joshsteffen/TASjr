@@ -130,7 +130,7 @@ fn main() {
         game.g_run_frame(t);
         t += 16;
 
-        let ps = game.vm.cast_mem_mut::<playerState_t>(game.clients);
+        let ps = game.vm.memory.cast_mut::<playerState_t>(game.clients);
         let origin = Vec3::from(ps.origin) + vec3(0.0, 0.0, ps.viewheight as f32);
         let dir = Mat3::from_angle_z(degrees(ps.viewangles[1]))
             * Mat3::from_angle_y(degrees(ps.viewangles[0]))
