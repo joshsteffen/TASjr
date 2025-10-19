@@ -5,7 +5,7 @@ use bytemuck::Zeroable;
 use clap::Parser;
 use three_d::*;
 
-use qvm::{
+use tasjr::{
     Snapshot,
     fs::Fs,
     game::Game,
@@ -66,12 +66,12 @@ fn main() {
     let mut indices = vec![];
     {
         let mut f = fs.open(&args.bsp).unwrap();
-        let bsp = qvm::bsp::Bsp::read(&mut f).unwrap();
+        let bsp = tasjr::bsp::Bsp::read(&mut f).unwrap();
         let draw_verts = bsp.draw_verts.read(&mut f).unwrap();
         let draw_indexes = bsp.draw_indexes.read(&mut f).unwrap();
         for surface in bsp.surfaces.read(&mut f).unwrap() {
             match surface.surface_type {
-                qvm::bsp::MapSurfaceType::Planar | qvm::bsp::MapSurfaceType::TriangleSoup => {
+                tasjr::bsp::MapSurfaceType::Planar | tasjr::bsp::MapSurfaceType::TriangleSoup => {
                     let first_out_vert = positions.len() as u32;
                     for i in 0..surface.num_verts {
                         let vert = &draw_verts[(surface.first_vert + i) as usize];
