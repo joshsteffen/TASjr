@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ffi::CStr;
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Neg, Not, Sub};
@@ -5,6 +6,7 @@ use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Neg, Not, Sub};
 use bytemuck::{Pod, cast, from_bytes, from_bytes_mut, pod_read_unaligned};
 use byteorder::{LittleEndian, ReadBytesExt};
 
+use crate::Snapshot;
 use crate::q3::opcode_t::{Type as opcode_t, *};
 
 #[derive(Debug)]
@@ -16,11 +18,29 @@ pub struct Instruction {
 #[derive(Default)]
 pub struct Memory {
     data: Vec<u8>,
+    pub dirty: HashSet<usize>,
 }
 
 impl Memory {
     pub fn new(data: Vec<u8>) -> Self {
-        Self { data }
+        Self {
+            data,
+            dirty: HashSet::new(),
+        }
+    }
+
+    pub fn size(&self) -> usize {
+        self.data.len()
+    }
+
+    pub fn clear_dirty(&mut self) {
+        self.dirty.clear();
+    }
+
+    pub fn set_dirty(&mut self, address: usize, size: usize) {
+        for i in 0..size {
+            self.dirty.insert(address + i);
+        }
     }
 
     pub fn slice(&self, address: usize, size: usize) -> &[u8] {
@@ -28,6 +48,7 @@ impl Memory {
     }
 
     pub fn slice_mut(&mut self, address: usize, size: usize) -> &mut [u8] {
+        self.set_dirty(address, size);
         &mut self.data[address..][..size]
     }
 
@@ -53,16 +74,18 @@ impl Memory {
 
     pub fn memset(&mut self, dst: u32, value: u8, size: u32) {
         let (dst, size) = (dst as usize, size as usize);
-        self.data[dst..][..size].fill(value);
+        self.slice_mut(dst, size).fill(value);
     }
 
     pub fn memcpy(&mut self, dst: u32, src: u32, size: u32) {
         let (dst, src, size) = (dst as usize, src as usize, size as usize);
+        self.set_dirty(dst, size);
         self.data.copy_within(src..src + size, dst);
     }
 
     pub fn strncpy(&mut self, dst: u32, src: u32, size: u32) {
         let (mut dst, mut src, mut size) = (dst as usize, src as usize, size as usize);
+        self.set_dirty(dst, size);
         while size != 0 && self.data[src] != 0 {
             self.data[dst] = self.data[src];
             src += 1;
@@ -74,6 +97,21 @@ impl Memory {
             dst += 1;
             size -= 1;
         }
+    }
+}
+
+impl Snapshot for Memory {
+    type Snapshot = Self;
+
+    fn take_snapshot(&self) -> Self::Snapshot {
+        Self::new(self.data.clone())
+    }
+
+    fn restore_from_snapshot(&mut self, snapshot: &Self::Snapshot) {
+        for &address in self.dirty.iter() {
+            self.data[address] = snapshot.data[address];
+        }
+        self.clear_dirty();
     }
 }
 
@@ -324,5 +362,18 @@ impl Vm {
         }
 
         None
+    }
+}
+
+// At least for now the only thing that needs to be snapshotted is the memory.
+impl Snapshot for Vm {
+    type Snapshot = <Memory as Snapshot>::Snapshot;
+
+    fn take_snapshot(&self) -> Self::Snapshot {
+        self.memory.take_snapshot()
+    }
+
+    fn restore_from_snapshot(&mut self, snapshot: &Self::Snapshot) {
+        self.memory.restore_from_snapshot(snapshot);
     }
 }

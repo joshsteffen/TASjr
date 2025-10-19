@@ -1,13 +1,15 @@
 use std::{collections::HashSet, ffi::CStr, path::PathBuf};
 
 use binrw::BinRead;
+use bytemuck::Zeroable;
 use clap::Parser;
 use three_d::*;
 
 use qvm::{
+    Snapshot,
     fs::Fs,
     game::Game,
-    q3::{CM_EntityString, CM_LoadMap, COM_Parse, Com_Init, playerState_t},
+    q3::{CM_EntityString, CM_LoadMap, COM_Parse, Com_Init, playerState_t, usercmd_t},
 };
 
 #[derive(clap::Parser)]
@@ -43,11 +45,9 @@ fn main() {
     let mut game = Game::new(&fs, "vm/qagame.qvm", entity_tokens);
     game.cvars.set("dedicated", "1".to_string());
     game.cvars.set("df_promode", "1".to_string());
-    game.g_init(0, 0, false);
-    game.g_run_frame(0);
-    game.g_client_connect(0, true, false).unwrap();
-    game.g_client_begin(0);
-    let mut t = 8;
+    game.init();
+    game.vm.memory.dirty.clear();
+    let mut snapshot = game.take_snapshot();
 
     let window = Window::new(Default::default()).unwrap();
     let context = window.gl();
@@ -97,6 +97,8 @@ fn main() {
 
     let mut keys = HashSet::new();
 
+    let mut usercmd = usercmd_t::zeroed();
+
     window.render_loop(move |frame_input| {
         for event in &frame_input.events {
             match event {
@@ -111,26 +113,32 @@ fn main() {
                     delta,
                     ..
                 } => {
-                    game.user_cmd.angles[1] -= (delta.0 * 100.0) as i32;
-                    game.user_cmd.angles[0] += (delta.1 * 100.0) as i32;
+                    usercmd.angles[1] -= (delta.0 * 100.0) as i32;
+                    usercmd.angles[0] += (delta.1 * 100.0) as i32;
                 }
                 _ => {}
             }
         }
 
-        game.user_cmd.serverTime = t;
-        game.user_cmd.forwardmove =
-            127 * (keys.contains(&Key::W) as i8 - keys.contains(&Key::S) as i8);
-        game.user_cmd.rightmove =
-            127 * (keys.contains(&Key::D) as i8 - keys.contains(&Key::A) as i8);
-        game.user_cmd.upmove =
-            127 * (keys.contains(&Key::Space) as i8 - keys.contains(&Key::C) as i8);
+        if keys.contains(&Key::Enter) {
+            snapshot = game.take_snapshot();
+            game.vm.memory.clear_dirty();
+        }
+        if keys.contains(&Key::Backspace) {
+            game.restore_from_snapshot(&snapshot);
+        }
 
-        game.g_client_think(0);
-        game.g_run_frame(t);
-        t += 16;
+        usercmd.forwardmove = 127 * (keys.contains(&Key::W) as i8 - keys.contains(&Key::S) as i8);
+        usercmd.rightmove = 127 * (keys.contains(&Key::D) as i8 - keys.contains(&Key::A) as i8);
+        usercmd.upmove = 127 * (keys.contains(&Key::Space) as i8 - keys.contains(&Key::C) as i8);
 
-        let ps = game.vm.memory.cast_mut::<playerState_t>(game.clients);
+        game.run_frame(usercmd);
+        game.run_frame(usercmd);
+
+        let ps = game
+            .vm
+            .memory
+            .cast_mut::<playerState_t>(game.clients.unwrap().address);
         let origin = Vec3::from(ps.origin) + vec3(0.0, 0.0, ps.viewheight as f32);
         let dir = Mat3::from_angle_z(degrees(ps.viewangles[1]))
             * Mat3::from_angle_y(degrees(ps.viewangles[0]))

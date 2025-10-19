@@ -1,12 +1,14 @@
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, marker::PhantomData, path::Path};
 
 use bytemuck::{Zeroable, cast, cast_slice_mut};
 
 use crate::{
+    Snapshot,
     fs::Fs,
     q3::{
-        CM_BoxTrace, CM_PointContents, ENTITYNUM_NONE, ENTITYNUM_WORLD, gameExport_t::*,
-        gameImport_t::*, sharedTraps_t::*, trace_t, usercmd_t, vmCvar_t,
+        CM_BoxTrace, CM_PointContents, ENTITYNUM_NONE, ENTITYNUM_WORLD, MAX_CLIENTS,
+        gameExport_t::*, gameImport_t::*, playerState_t, sharedEntity_t, sharedTraps_t::*, trace_t,
+        usercmd_t, vmCvar_t,
     },
     vm::{ExitReason, Vm},
 };
@@ -49,21 +51,36 @@ impl Cvars {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct GameData<T> {
+    pub address: u32,
+    pub count: u32,
+    pub sizeof: u32,
+    phantom: PhantomData<T>,
+}
+
+impl<T> GameData<T> {
+    fn new(address: u32, count: u32, sizeof: u32) -> Self {
+        Self {
+            address,
+            count,
+            sizeof,
+            phantom: PhantomData,
+        }
+    }
+}
+
 pub struct Game {
     pub cvars: Cvars,
     pub vm: Vm,
-
-    pub g_entities: u32,
-    pub num_g_entities: u32,
-    pub sizeof_g_entity: u32,
-
-    pub clients: u32,
-    pub sizeof_game_client: u32,
+    pub g_entities: Option<GameData<sharedEntity_t>>,
+    pub clients: Option<GameData<playerState_t>>,
+    pub time: i32,
 
     // TODO: this can be part of CM_ stuff later
     entity_tokens: Box<dyn Iterator<Item = String>>,
 
-    pub user_cmd: usercmd_t,
+    usercmd: usercmd_t,
 }
 
 impl Game {
@@ -80,13 +97,27 @@ impl Game {
             cvars,
             vm,
             entity_tokens,
-            g_entities: 0,
-            num_g_entities: 0,
-            sizeof_g_entity: 0,
-            clients: 0,
-            sizeof_game_client: 0,
-            user_cmd: usercmd_t::zeroed(),
+            g_entities: None,
+            clients: None,
+            usercmd: usercmd_t::zeroed(),
+            time: 0,
         }
+    }
+
+    pub fn init(&mut self) {
+        self.g_init(0, 0, false);
+        self.g_run_frame(0);
+        self.time += 8;
+        self.g_client_connect(0, true, false).unwrap();
+        self.g_client_begin(0);
+    }
+
+    pub fn run_frame(&mut self, usercmd: usercmd_t) {
+        self.usercmd = usercmd;
+        self.usercmd.serverTime = self.time;
+        self.g_client_think(0);
+        self.g_run_frame(self.time);
+        self.time += 8;
     }
 
     fn call_vm(&mut self, args: [u32; 10]) -> u32 {
@@ -195,14 +226,12 @@ impl Game {
             }
             G_CVAR_UPDATE => {
                 let vm_cvar = self.vm.memory.cast_mut::<vmCvar_t>(self.vm.read_arg(0));
-                let name = &self.cvars.registered[vm_cvar.handle as usize];
-                eprintln!("G_CVAR_UPDATE {name}");
+                let _name = &self.cvars.registered[vm_cvar.handle as usize];
                 self.vm.set_result(0);
             }
             G_CVAR_SET => {
                 let name = self.vm.memory.cstr(self.vm.read_arg(0)).to_string_lossy();
                 let value = self.vm.memory.cstr(self.vm.read_arg(1)).to_string_lossy();
-                eprintln!("G_CVAR_SET {name} {value}");
                 self.cvars.set(&name, value.to_string());
                 self.vm.set_result(0);
             }
@@ -231,11 +260,16 @@ impl Game {
                 self.vm.set_result(0);
             }
             G_LOCATE_GAME_DATA => {
-                self.g_entities = self.vm.read_arg::<u32>(0);
-                self.num_g_entities = self.vm.read_arg::<u32>(1);
-                self.sizeof_g_entity = self.vm.read_arg::<u32>(2);
-                self.clients = self.vm.read_arg::<u32>(3);
-                self.sizeof_game_client = self.vm.read_arg::<u32>(4);
+                self.g_entities = Some(GameData::new(
+                    self.vm.read_arg(0),
+                    self.vm.read_arg(1),
+                    self.vm.read_arg(2),
+                ));
+                self.clients = Some(GameData::new(
+                    self.vm.read_arg(3),
+                    MAX_CLIENTS,
+                    self.vm.read_arg(4),
+                ));
                 self.vm.set_result(0);
             }
             G_SEND_SERVER_COMMAND => {
@@ -316,7 +350,7 @@ impl Game {
                 self.vm.set_result(0);
             }
             G_GET_USERCMD => {
-                self.vm.memory.write(self.vm.read_arg(1), self.user_cmd);
+                self.vm.memory.write(self.vm.read_arg(1), self.usercmd);
                 self.vm.set_result(0);
             }
             G_GET_ENTITY_TOKEN => {
@@ -378,5 +412,32 @@ impl Game {
             }
             _ => unimplemented!("syscall {syscall:?}"),
         };
+    }
+}
+
+pub struct GameSnapshot {
+    vm: <Vm as Snapshot>::Snapshot,
+    g_entities: Option<GameData<sharedEntity_t>>,
+    clients: Option<GameData<playerState_t>>,
+    time: i32,
+}
+
+impl Snapshot for Game {
+    type Snapshot = GameSnapshot;
+
+    fn take_snapshot(&self) -> Self::Snapshot {
+        Self::Snapshot {
+            vm: self.vm.take_snapshot(),
+            g_entities: self.g_entities,
+            clients: self.clients,
+            time: self.time,
+        }
+    }
+
+    fn restore_from_snapshot(&mut self, snapshot: &Self::Snapshot) {
+        self.vm.restore_from_snapshot(&snapshot.vm);
+        self.g_entities = snapshot.g_entities;
+        self.clients = snapshot.clients;
+        self.time = snapshot.time;
     }
 }
