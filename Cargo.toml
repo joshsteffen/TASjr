@@ -8,6 +8,7 @@ three-d = { git = "https://github.com/asny/three-d.git" }
 
 [dependencies]
 binrw = "0.15.0"
+bit-set = "0.8.0"
 bytemuck = { version = "1.24.0", features = ["derive"] }
 byteorder = "1.5.0"
 clap = { version = "4.5.49", features = ["derive"] }

@@ -1,8 +1,8 @@
-use std::collections::HashSet;
 use std::ffi::CStr;
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Neg, Not, Sub};
 
+use bit_set::BitSet;
 use bytemuck::{Pod, cast, from_bytes, from_bytes_mut, pod_read_unaligned};
 use byteorder::{LittleEndian, ReadBytesExt};
 
@@ -18,15 +18,15 @@ pub struct Instruction {
 #[derive(Default)]
 pub struct Memory {
     data: Vec<u8>,
-    pub dirty: HashSet<usize>,
+    dirty: BitSet,
 }
 
 impl Memory {
+    const DIRTY_CHUNK_SIZE: usize = 64;
+
     pub fn new(data: Vec<u8>) -> Self {
-        Self {
-            data,
-            dirty: HashSet::new(),
-        }
+        let dirty = BitSet::with_capacity(data.len().div_ceil(Self::DIRTY_CHUNK_SIZE));
+        Self { data, dirty }
     }
 
     pub fn size(&self) -> usize {
@@ -38,8 +38,12 @@ impl Memory {
     }
 
     pub fn set_dirty(&mut self, address: usize, size: usize) {
-        for i in 0..size {
-            self.dirty.insert(address + i);
+        let (start, end) = (
+            address / Self::DIRTY_CHUNK_SIZE,
+            (address + size).div_ceil(Self::DIRTY_CHUNK_SIZE),
+        );
+        for chunk in start..end {
+            self.dirty.insert(chunk);
         }
     }
 
@@ -101,15 +105,17 @@ impl Memory {
 }
 
 impl Snapshot for Memory {
-    type Snapshot = Self;
+    type Snapshot = Vec<u8>;
 
     fn take_snapshot(&self) -> Self::Snapshot {
-        Self::new(self.data.clone())
+        self.data.clone()
     }
 
     fn restore_from_snapshot(&mut self, snapshot: &Self::Snapshot) {
-        for &address in self.dirty.iter() {
-            self.data[address] = snapshot.data[address];
+        for chunk in &self.dirty {
+            let addr = chunk * Self::DIRTY_CHUNK_SIZE;
+            let size = usize::min(Self::DIRTY_CHUNK_SIZE, self.data.len() - addr);
+            self.data[addr..][..size].copy_from_slice(&snapshot[addr..][..size]);
         }
         self.clear_dirty();
     }

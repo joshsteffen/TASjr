@@ -2272,6 +2272,7 @@ version = "0.1.0"
 dependencies = [
  "bindgen",
  "binrw",
+ "bit-set",
  "bytemuck",
  "byteorder",
  "cc",

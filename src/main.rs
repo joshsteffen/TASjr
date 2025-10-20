@@ -55,7 +55,7 @@ impl App {
         game.cvars.set("dedicated", "1".to_string());
         game.cvars.set("df_promode", "1".to_string());
         game.init();
-        game.vm.memory.dirty.clear();
+        game.vm.memory.clear_dirty();
         let snapshot = game.take_snapshot();
 
         let mut renderer = Renderer::new(cc.gl.clone().unwrap());
