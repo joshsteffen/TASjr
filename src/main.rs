@@ -1,8 +1,4 @@
-use std::{
-    ffi::CStr,
-    path::PathBuf,
-    sync::{Arc, Mutex},
-};
+use std::{ffi::CStr, path::PathBuf, sync::Arc};
 
 use bytemuck::Zeroable;
 use clap::Parser;
@@ -32,7 +28,7 @@ struct App {
     game: Game,
     snapshot: GameSnapshot,
     usercmd: usercmd_t,
-    renderer: Arc<Mutex<Renderer>>,
+    renderer: Arc<Renderer>,
 }
 
 impl App {
@@ -69,7 +65,7 @@ impl App {
             game,
             snapshot,
             usercmd: usercmd_t::zeroed(),
-            renderer: Arc::new(Mutex::new(renderer)),
+            renderer: Arc::new(renderer),
         }
     }
 }
@@ -103,7 +99,7 @@ impl eframe::App for App {
                     rect: ui.min_rect(),
                     callback: Arc::new(eframe::egui_glow::CallbackFn::new(
                         move |info, _painter| {
-                            renderer.lock().unwrap().render(info, origin, angles.into());
+                            renderer.render(info, origin, angles.into());
                         },
                     )),
                 })
