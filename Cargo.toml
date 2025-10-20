@@ -3,12 +3,16 @@ name = "tasjr"
 version = "0.1.0"
 edition = "2024"
 
+[patch.crates-io]
+three-d = { git = "https://github.com/asny/three-d.git" }
+
 [dependencies]
 binrw = "0.15.0"
 bytemuck = { version = "1.24.0", features = ["derive"] }
 byteorder = "1.5.0"
 clap = { version = "4.5.49", features = ["derive"] }
-three-d = "0.18.2"
+eframe = { version = "0.33.0", default-features = false, features = ["default_fonts", "glow", "wayland"] }
+three-d = { version = "0.19.0", default-features = false }
 zip = { version = "6.0.0", default-features = false, features = ["deflate"] }
 
 [build-dependencies]

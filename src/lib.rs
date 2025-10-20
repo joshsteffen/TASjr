@@ -2,6 +2,7 @@ pub mod bsp;
 pub mod fs;
 pub mod game;
 pub mod q3;
+pub mod renderer;
 pub mod vm;
 
 pub trait Snapshot {
