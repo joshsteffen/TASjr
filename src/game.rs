@@ -425,9 +425,9 @@ pub struct GameSnapshot {
 impl Snapshot for Game {
     type Snapshot = GameSnapshot;
 
-    fn take_snapshot(&self) -> Self::Snapshot {
+    fn take_snapshot(&self, baseline: Option<&Self::Snapshot>) -> Self::Snapshot {
         Self::Snapshot {
-            vm: self.vm.take_snapshot(),
+            vm: self.vm.take_snapshot(baseline.map(|b| &b.vm)),
             g_entities: self.g_entities,
             clients: self.clients,
             time: self.time,

@@ -9,6 +9,6 @@ pub mod vm;
 pub trait Snapshot {
     type Snapshot;
 
-    fn take_snapshot(&self) -> Self::Snapshot;
+    fn take_snapshot(&self, baseline: Option<&Self::Snapshot>) -> Self::Snapshot;
     fn restore_from_snapshot(&mut self, snapshot: &Self::Snapshot);
 }

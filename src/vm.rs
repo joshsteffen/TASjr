@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::ffi::CStr;
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Neg, Not, Sub};
+use std::rc::Rc;
 
 use bit_set::BitSet;
 use bytemuck::{Pod, cast, from_bytes, from_bytes_mut, pod_read_unaligned};
@@ -8,6 +10,8 @@ use byteorder::{LittleEndian, ReadBytesExt};
 
 use crate::Snapshot;
 use crate::q3::opcode_t::{Type as opcode_t, *};
+
+const CHUNK_SIZE: usize = 64;
 
 #[derive(Debug)]
 pub struct Instruction {
@@ -22,10 +26,9 @@ pub struct Memory {
 }
 
 impl Memory {
-    const DIRTY_CHUNK_SIZE: usize = 64;
-
-    pub fn new(data: Vec<u8>) -> Self {
-        let dirty = BitSet::with_capacity(data.len().div_ceil(Self::DIRTY_CHUNK_SIZE));
+    pub fn new(mut data: Vec<u8>) -> Self {
+        data.resize(data.len().next_multiple_of(CHUNK_SIZE), 0);
+        let dirty = BitSet::with_capacity(data.len() / CHUNK_SIZE);
         Self { data, dirty }
     }
 
@@ -38,10 +41,7 @@ impl Memory {
     }
 
     pub fn set_dirty(&mut self, address: usize, size: usize) {
-        let (start, end) = (
-            address / Self::DIRTY_CHUNK_SIZE,
-            (address + size).div_ceil(Self::DIRTY_CHUNK_SIZE),
-        );
+        let (start, end) = (address / CHUNK_SIZE, (address + size).div_ceil(CHUNK_SIZE));
         for chunk in start..end {
             self.dirty.insert(chunk);
         }
@@ -104,20 +104,58 @@ impl Memory {
     }
 }
 
-impl Snapshot for Memory {
-    type Snapshot = Vec<u8>;
+pub enum MemorySnapshot {
+    Baseline(Vec<u8>),
+    Delta {
+        baseline: Rc<Self>,
+        chunks: HashMap<usize, Vec<u8>>,
+    },
+}
 
-    fn take_snapshot(&self) -> Self::Snapshot {
-        self.data.clone()
+impl Snapshot for Memory {
+    type Snapshot = Rc<MemorySnapshot>;
+
+    fn take_snapshot(&self, baseline: Option<&Self::Snapshot>) -> Self::Snapshot {
+        if let Some(base_snap) = baseline
+            && let MemorySnapshot::Baseline(base_mem) = &**base_snap
+        {
+            Rc::new(MemorySnapshot::Delta {
+                baseline: Rc::clone(base_snap),
+                chunks: self
+                    .dirty
+                    .iter()
+                    .filter_map(|chunk| {
+                        let addr = chunk * CHUNK_SIZE;
+                        let data = &self.data[addr..][..CHUNK_SIZE];
+                        if data != &base_mem[addr..][..CHUNK_SIZE] {
+                            Some((addr, data.to_owned()))
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
+            })
+        } else {
+            Rc::new(MemorySnapshot::Baseline(self.data.clone()))
+        }
     }
 
     fn restore_from_snapshot(&mut self, snapshot: &Self::Snapshot) {
-        for chunk in &self.dirty {
-            let addr = chunk * Self::DIRTY_CHUNK_SIZE;
-            let size = usize::min(Self::DIRTY_CHUNK_SIZE, self.data.len() - addr);
-            self.data[addr..][..size].copy_from_slice(&snapshot[addr..][..size]);
+        match &**snapshot {
+            MemorySnapshot::Baseline(baseline) => {
+                for chunk in &self.dirty {
+                    let addr = chunk * CHUNK_SIZE;
+                    self.data[addr..][..CHUNK_SIZE]
+                        .copy_from_slice(&baseline[addr..][..CHUNK_SIZE]);
+                }
+            }
+            MemorySnapshot::Delta { baseline, chunks } => {
+                self.restore_from_snapshot(baseline);
+                for (&addr, data) in chunks.iter() {
+                    self.data[addr..][..CHUNK_SIZE].copy_from_slice(data);
+                }
+            }
         }
-        self.clear_dirty();
     }
 }
 
@@ -375,8 +413,8 @@ impl Vm {
 impl Snapshot for Vm {
     type Snapshot = <Memory as Snapshot>::Snapshot;
 
-    fn take_snapshot(&self) -> Self::Snapshot {
-        self.memory.take_snapshot()
+    fn take_snapshot(&self, baseline: Option<&Self::Snapshot>) -> Self::Snapshot {
+        self.memory.take_snapshot(baseline)
     }
 
     fn restore_from_snapshot(&mut self, snapshot: &Self::Snapshot) {

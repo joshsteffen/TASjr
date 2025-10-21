@@ -8,7 +8,7 @@ use three_d::*;
 use tasjr::{
     Snapshot,
     fs::Fs,
-    game::{Game, GameSnapshot},
+    game::Game,
     q3::{CM_EntityString, CM_LoadMap, COM_Parse, Com_Init, playerState_t, usercmd_t},
     renderer::Renderer,
     ui::Timeline,
@@ -27,7 +27,7 @@ struct Args {
 
 struct App {
     game: Game,
-    snapshots: Vec<GameSnapshot>,
+    snapshots: Vec<<Game as Snapshot>::Snapshot>,
     usercmds: Vec<usercmd_t>,
     renderer: Arc<Renderer>,
     timeline: Timeline,
@@ -58,11 +58,12 @@ impl App {
         game.cvars.set("df_promode", "1".to_string());
         game.init();
         game.vm.memory.clear_dirty();
+        let baseline = game.take_snapshot(None);
 
         // Record some dummy data
-        let mut snapshots = vec![];
+        let mut deltas = vec![];
         let mut usercmds = vec![];
-        snapshots.push(game.take_snapshot());
+        deltas.push(game.take_snapshot(Some(&baseline)));
         while game.time < 30000 {
             let usercmd = usercmd_t {
                 forwardmove: 127,
@@ -72,7 +73,7 @@ impl App {
             usercmds.push(usercmd);
             game.run_frame(usercmd);
             if game.time % 1000 == 0 {
-                snapshots.push(game.take_snapshot());
+                deltas.push(game.take_snapshot(Some(&baseline)));
             }
         }
 
@@ -81,7 +82,7 @@ impl App {
 
         Self {
             game,
-            snapshots,
+            snapshots: deltas,
             usercmds,
             renderer: Arc::new(renderer),
             timeline: Timeline::new((0.0..=30.0).into()),
