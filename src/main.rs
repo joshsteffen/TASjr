@@ -11,6 +11,7 @@ use tasjr::{
     game::{Game, GameSnapshot},
     q3::{CM_EntityString, CM_LoadMap, COM_Parse, Com_Init, playerState_t, usercmd_t},
     renderer::Renderer,
+    ui::Timeline,
 };
 
 #[derive(clap::Parser)]
@@ -26,9 +27,10 @@ struct Args {
 
 struct App {
     game: Game,
-    snapshot: GameSnapshot,
-    usercmd: usercmd_t,
+    snapshots: Vec<GameSnapshot>,
+    usercmds: Vec<usercmd_t>,
     renderer: Arc<Renderer>,
+    timeline: Timeline,
 }
 
 impl App {
@@ -56,16 +58,33 @@ impl App {
         game.cvars.set("df_promode", "1".to_string());
         game.init();
         game.vm.memory.clear_dirty();
-        let snapshot = game.take_snapshot();
+
+        // Record some dummy data
+        let mut snapshots = vec![];
+        let mut usercmds = vec![];
+        snapshots.push(game.take_snapshot());
+        while game.time < 30000 {
+            let usercmd = usercmd_t {
+                forwardmove: 127,
+                rightmove: if game.time % 3000 < 1500 { 127 } else { -127 },
+                ..Zeroable::zeroed()
+            };
+            usercmds.push(usercmd);
+            game.run_frame(usercmd);
+            if game.time % 1000 == 0 {
+                snapshots.push(game.take_snapshot());
+            }
+        }
 
         let mut renderer = Renderer::new(cc.gl.clone().unwrap());
         renderer.load_bsp(&fs, &args.bsp);
 
         Self {
             game,
-            snapshot,
-            usercmd: usercmd_t::zeroed(),
+            snapshots,
+            usercmds,
             renderer: Arc::new(renderer),
+            timeline: Timeline::new((0.0..=30.0).into()),
         }
     }
 }
@@ -82,48 +101,55 @@ impl eframe::App for App {
         let origin = Vec3::from(ps.origin) + vec3(0.0, 0.0, ps.viewheight as f32);
         let angles = ps.viewangles;
 
-        let renderer = Arc::clone(&self.renderer);
+        egui::TopBottomPanel::bottom("timeline")
+            .resizable(true)
+            .show(ctx, |ui| {
+                ui.take_available_space();
+                egui::Frame::NONE.show(ui, |ui| {
+                    self.timeline.show(ui);
+                });
+            });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            egui::Frame::canvas(ui.style()).show(ui, |ui| {
-                ui.take_available_space();
-
-                let response = ui.interact(ui.min_rect(), ui.id().with("3d"), egui::Sense::drag());
-                if response.dragged() {
-                    let delta = response.drag_delta();
-                    self.usercmd.angles[1] -= (delta.x * 100.0) as i32;
-                    self.usercmd.angles[0] += (delta.y * 100.0) as i32;
-                }
-
-                ui.painter().add(egui::PaintCallback {
-                    rect: ui.min_rect(),
-                    callback: Arc::new(eframe::egui_glow::CallbackFn::new(
-                        move |info, _painter| {
-                            renderer.render(info, origin, angles.into());
-                        },
-                    )),
-                })
+            ui.columns(2, |columns| {
+                egui::Frame::NONE.show(&mut columns[0], |ui| {
+                    ui.take_available_space();
+                    let renderer = Arc::clone(&self.renderer);
+                    ui.painter().add(egui::PaintCallback {
+                        rect: ui.min_rect(),
+                        callback: Arc::new(eframe::egui_glow::CallbackFn::new(
+                            move |info, _painter| {
+                                renderer.render(info, origin, angles.into());
+                            },
+                        )),
+                    })
+                });
+                egui::Frame::NONE.show(&mut columns[1], |ui| {
+                    ui.take_available_space();
+                    ui.label("test");
+                    let renderer = Arc::clone(&self.renderer);
+                    ui.painter().add(egui::PaintCallback {
+                        rect: ui.min_rect(),
+                        callback: Arc::new(eframe::egui_glow::CallbackFn::new(
+                            move |info, _painter| {
+                                renderer.render(info, origin, angles.into());
+                            },
+                        )),
+                    })
+                });
             });
         });
 
-        ctx.input(|i| {
-            use egui::Key::*;
-
-            self.usercmd.forwardmove = 127 * (i.key_down(W) as i8 - i.key_down(S) as i8);
-            self.usercmd.rightmove = 127 * (i.key_down(D) as i8 - i.key_down(A) as i8);
-            self.usercmd.upmove = 127 * (i.key_down(Space) as i8 - i.key_down(C) as i8);
-
-            if i.key_pressed(Backspace) {
-                self.game.restore_from_snapshot(&self.snapshot);
-            }
-            if i.key_pressed(Enter) {
-                self.snapshot = self.game.take_snapshot();
-                self.game.vm.memory.clear_dirty();
-            }
-        });
-
-        self.game.run_frame(self.usercmd);
-        self.game.run_frame(self.usercmd);
+        let ms = (self.timeline.playhead * 1000.0) as i32;
+        let ms = ms - ms % 8;
+        if self.game.time > ms || self.game.time / 1000 != ms / 1000 {
+            self.game
+                .restore_from_snapshot(&self.snapshots[ms as usize / 1000]);
+        }
+        while self.game.time < ms {
+            self.game
+                .run_frame(self.usercmds[self.game.time as usize / 8]);
+        }
     }
 }
 
