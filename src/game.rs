@@ -74,6 +74,7 @@ pub struct Game {
     pub vm: Vm,
     pub g_entities: Option<GameData<sharedEntity_t>>,
     pub clients: Option<GameData<playerState_t>>,
+    pub init_time: i32,
     pub time: i32,
     usercmd: usercmd_t,
 }
@@ -92,6 +93,7 @@ impl Game {
             g_entities: None,
             clients: None,
             usercmd: usercmd_t::zeroed(),
+            init_time: 0,
             time: 0,
         }
     }
@@ -100,6 +102,7 @@ impl Game {
         self.g_init(0, 0, false);
         self.g_run_frame(0);
         self.time += 8;
+        self.init_time = self.time;
         self.g_client_connect(0, true, false).unwrap();
         self.g_client_begin(0);
     }
@@ -110,6 +113,10 @@ impl Game {
         self.g_client_think(0);
         self.g_run_frame(self.time);
         self.time += 8;
+    }
+
+    pub fn relative_time(&self) -> i32 {
+        self.time - self.init_time
     }
 
     fn call_vm(&mut self, args: [u32; 10]) -> u32 {
