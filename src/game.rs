@@ -6,9 +6,8 @@ use crate::{
     Snapshot,
     fs::Fs,
     q3::{
-        CM_BoxTrace, CM_PointContents, ENTITYNUM_NONE, ENTITYNUM_WORLD, MAX_CLIENTS,
-        gameExport_t::*, gameImport_t::*, playerState_t, sharedEntity_t, sharedTraps_t::*, trace_t,
-        usercmd_t, vmCvar_t,
+        ENTITYNUM_NONE, ENTITYNUM_WORLD, MAX_CLIENTS, Map, gameExport_t::*, gameImport_t::*,
+        playerState_t, sharedEntity_t, sharedTraps_t::*, trace_t, usercmd_t, vmCvar_t,
     },
     vm::{ExitReason, Vm},
 };
@@ -76,27 +75,20 @@ pub struct Game {
     pub g_entities: Option<GameData<sharedEntity_t>>,
     pub clients: Option<GameData<playerState_t>>,
     pub time: i32,
-
-    // TODO: this can be part of CM_ stuff later
-    entity_tokens: Box<dyn Iterator<Item = String>>,
-
     usercmd: usercmd_t,
 }
 
 impl Game {
-    pub fn new<P: AsRef<Path>>(fs: &Fs, vm_path: P, entity_tokens: Vec<String>) -> Self {
+    pub fn new<P: AsRef<Path>>(fs: &Fs, vm_path: P) -> Self {
         let cvars = Cvars::default();
 
         let mut vm = Vm::default();
         let f = fs.open(vm_path).unwrap();
         vm.load(f).unwrap();
 
-        let entity_tokens = Box::new(entity_tokens.into_iter());
-
         Self {
             cvars,
             vm,
-            entity_tokens,
             g_entities: None,
             clients: None,
             usercmd: usercmd_t::zeroed(),
@@ -311,18 +303,16 @@ impl Game {
                 let content_mask = self.vm.read_arg::<i32>(6);
                 let trace = self.vm.memory.cast_mut::<trace_t>(results);
                 *trace = trace_t::zeroed();
-                unsafe {
-                    CM_BoxTrace(
-                        trace,
-                        start.as_ptr(),
-                        end.as_ptr(),
-                        mins.as_ptr(),
-                        maxs.as_ptr(),
-                        0,
-                        content_mask,
-                        0,
-                    );
-                }
+                Map::instance().box_trace(
+                    trace,
+                    &start,
+                    &end,
+                    &mins,
+                    &maxs,
+                    0,
+                    content_mask,
+                    false,
+                );
                 trace.entityNum = if trace.fraction == 1.0 {
                     ENTITYNUM_NONE
                 } else {
@@ -333,9 +323,8 @@ impl Game {
             G_POINT_CONTENTS => {
                 eprintln!("G_POINT_CONTENTS");
                 let p = self.vm.memory.read::<[f32; 3]>(self.vm.read_arg(0));
-                unsafe {
-                    self.vm.set_result(CM_PointContents(p.as_ptr(), 0) as u32);
-                }
+                self.vm
+                    .set_result(Map::instance().point_contents(&p, 0) as u32);
             }
             G_LINKENTITY => {
                 eprintln!("G_LINKENTITY");
@@ -354,7 +343,7 @@ impl Game {
                 self.vm.set_result(0);
             }
             G_GET_ENTITY_TOKEN => {
-                if let Some(token) = self.entity_tokens.next() {
+                if let Some(token) = Map::instance().entity_tokens.next() {
                     let token = token.as_bytes();
                     let buffer = self.vm.read_arg::<u32>(0) as usize;
                     let size = self.vm.read_arg::<u32>(1) as usize;

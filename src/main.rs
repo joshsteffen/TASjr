@@ -1,4 +1,4 @@
-use std::{ffi::CStr, path::PathBuf, sync::Arc};
+use std::{path::PathBuf, sync::Arc};
 
 use bytemuck::Zeroable;
 use clap::Parser;
@@ -9,7 +9,7 @@ use tasjr::{
     Snapshot,
     fs::Fs,
     game::Game,
-    q3::{CM_EntityString, CM_LoadMap, COM_Parse, Com_Init, playerState_t, usercmd_t},
+    q3::{Map, playerState_t, usercmd_t},
     renderer::Renderer,
     ui::Timeline,
 };
@@ -39,21 +39,9 @@ impl App {
         let fs = Fs::new(&args.roots).unwrap();
 
         let mut buf = fs.read(&args.bsp).unwrap();
-        let mut entity_tokens = vec![];
-        unsafe {
-            Com_Init();
-            CM_LoadMap(c"q3dm6".as_ptr(), buf.as_mut_ptr().cast(), buf.len() as i32);
-            let mut p = CM_EntityString().cast_const();
-            loop {
-                let s = COM_Parse(&mut p);
-                if s.is_null() || *s == 0 {
-                    break;
-                }
-                entity_tokens.push(CStr::from_ptr(s).to_str().unwrap().to_string());
-            }
-        }
+        Map::instance().load(args.bsp.to_str().unwrap(), &mut buf);
 
-        let mut game = Game::new(&fs, "vm/qagame.qvm", entity_tokens);
+        let mut game = Game::new(&fs, "vm/qagame.qvm");
         game.cvars.set("dedicated", "1".to_string());
         game.cvars.set("df_promode", "1".to_string());
         game.init();
