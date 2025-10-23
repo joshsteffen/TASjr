@@ -131,7 +131,7 @@ impl Game {
 
     pub fn g_init(&mut self, level_time: i32, random_seed: i32, restart: bool) {
         self.call_vm([
-            GAME_INIT,
+            GAME_INIT as _,
             level_time as u32,
             random_seed as u32,
             restart as u32,
@@ -151,7 +151,7 @@ impl Game {
         is_bot: bool,
     ) -> Result<(), String> {
         let result = self.call_vm([
-            GAME_CLIENT_CONNECT,
+            GAME_CLIENT_CONNECT as _,
             client_num as u32,
             first_time as u32,
             is_bot as u32,
@@ -170,19 +170,52 @@ impl Game {
     }
 
     pub fn g_client_begin(&mut self, client_num: i32) {
-        self.call_vm([GAME_CLIENT_BEGIN, client_num as u32, 0, 0, 0, 0, 0, 0, 0, 0]);
+        self.call_vm([
+            GAME_CLIENT_BEGIN as _,
+            client_num as u32,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ]);
     }
 
     pub fn g_client_think(&mut self, client_num: i32) {
-        self.call_vm([GAME_CLIENT_THINK, client_num as u32, 0, 0, 0, 0, 0, 0, 0, 0]);
+        self.call_vm([
+            GAME_CLIENT_THINK as _,
+            client_num as u32,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ]);
     }
 
     pub fn g_run_frame(&mut self, level_time: i32) {
-        self.call_vm([GAME_RUN_FRAME, level_time as u32, 0, 0, 0, 0, 0, 0, 0, 0]);
+        self.call_vm([
+            GAME_RUN_FRAME as _,
+            level_time as u32,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ]);
     }
 
     fn handle_syscall(&mut self, syscall: u32) {
-        match syscall {
+        match syscall as _ {
             G_PRINT => {
                 let s = self.vm.memory.cstr(self.vm.read_arg(0)).to_string_lossy();
                 println!("{s}");
