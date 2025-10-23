@@ -16,14 +16,28 @@ use crate::{
 pub struct Renderer {
     context: Context,
     map_model: Option<Gm<Mesh, NormalMaterial>>,
+    player_model: Gm<Mesh, ColorMaterial>,
 }
 
 impl Renderer {
     pub fn new(gl: Arc<glow::Context>) -> Self {
         let context = Context::from_gl_context(gl).unwrap();
+
+        let mut mesh = CpuMesh::cube();
+        mesh.transform(
+            Mat4::from_translation(vec3(0.0, 0.0, 4.0))
+                * Mat4::from_nonuniform_scale(15.0, 15.0, 28.0),
+        )
+        .unwrap();
+        let player_model = Gm::new(
+            Mesh::new(&context, &mesh),
+            ColorMaterial::new_opaque(&context, &CpuMaterial::default()),
+        );
+
         Self {
             context,
             map_model: None,
+            player_model,
         }
     }
 
@@ -81,13 +95,23 @@ impl Renderer {
             ..Default::default()
         };
         mesh.compute_normals();
-        self.map_model = Some(Gm::new(
-            Mesh::new(&self.context, &mesh),
-            NormalMaterial::default(),
-        ));
+        let mut material = NormalMaterial::default();
+        material.render_states.cull = Cull::Front;
+        self.map_model = Some(Gm::new(Mesh::new(&self.context, &mesh), material));
     }
 
-    pub fn render(&self, info: egui::PaintCallbackInfo, origin: Vec3, angles: Vec3) {
+    pub fn set_player_origin(&mut self, origin: Vec3) {
+        self.player_model
+            .set_transformation(Mat4::from_translation(origin));
+    }
+
+    pub fn render(
+        &self,
+        info: egui::PaintCallbackInfo,
+        origin: Vec3,
+        angles: Vec3,
+        show_player: bool,
+    ) {
         let screen = RenderTarget::screen(
             &self.context,
             info.screen_size_px[0],
@@ -124,6 +148,9 @@ impl Renderer {
                     ClearState::color_and_depth(0.0, 0.0, 0.0, 1.0, 1.0),
                 )
                 .render_partially(scissor_box, &camera, map_model, &[]);
+        }
+        if show_player {
+            screen.render_partially(scissor_box, &camera, &self.player_model, &[]);
         }
     }
 }

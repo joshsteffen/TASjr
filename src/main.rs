@@ -1,9 +1,11 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+};
 
 use bytemuck::pod_collect_to_vec;
 use clap::Parser;
 use eframe::egui;
-use three_d::*;
 
 use tasjr::{
     Snapshot,
@@ -11,7 +13,10 @@ use tasjr::{
     game::Game,
     q3::{Map, playerState_t, usercmd_t},
     renderer::Renderer,
-    ui::Timeline,
+    ui::{
+        Timeline,
+        viewport::{FlyCam, first_person_ui},
+    },
 };
 
 #[derive(clap::Parser)]
@@ -33,9 +38,10 @@ struct App {
     game: Game,
     snapshots: Vec<<Game as Snapshot>::Snapshot>,
     usercmds: Vec<usercmd_t>,
-    renderer: Arc<Renderer>,
+    renderer: Arc<Mutex<Renderer>>,
     timeline: Timeline,
     playing: bool,
+    flycam: FlyCam,
 }
 
 impl App {
@@ -76,9 +82,10 @@ impl App {
             game,
             snapshots: deltas,
             usercmds,
-            renderer: Arc::new(renderer),
+            renderer: Arc::new(Mutex::new(renderer)),
             timeline: Timeline::new((0.0..=duration).into()),
             playing: false,
+            flycam: Default::default(),
         }
     }
 }
@@ -92,8 +99,10 @@ impl eframe::App for App {
             .vm
             .memory
             .cast_mut::<playerState_t>(self.game.clients.unwrap().address);
-        let origin = Vec3::from(ps.origin) + vec3(0.0, 0.0, ps.viewheight as f32);
-        let angles = ps.viewangles;
+        self.renderer
+            .lock()
+            .unwrap()
+            .set_player_origin(ps.origin.into());
 
         if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
             self.playing = !self.playing;
@@ -127,17 +136,9 @@ impl eframe::App for App {
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            egui::Frame::NONE.show(ui, |ui| {
-                ui.take_available_space();
-                let renderer = Arc::clone(&self.renderer);
-                ui.painter().add(egui::PaintCallback {
-                    rect: ui.min_rect(),
-                    callback: Arc::new(eframe::egui_glow::CallbackFn::new(
-                        move |info, _painter| {
-                            renderer.render(info, origin, angles.into());
-                        },
-                    )),
-                })
+            ui.columns_const(|[left_ui, right_ui]| {
+                self.flycam.ui(left_ui, Arc::clone(&self.renderer));
+                first_person_ui(right_ui, Arc::clone(&self.renderer), ps);
             });
         });
 
