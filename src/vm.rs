@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::ffi::CStr;
 use std::io::{Read, Seek, SeekFrom};
 use std::ops::{Add, BitAnd, BitOr, BitXor, Div, Mul, Neg, Not, Sub};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use bit_set::BitSet;
 use bytemuck::{Pod, cast, from_bytes, from_bytes_mut, pod_read_unaligned};
@@ -13,13 +13,13 @@ use crate::q3::opcode_t::{Type as opcode_t, *};
 
 const CHUNK_SIZE: usize = 64;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Instruction {
     pub opcode: opcode_t,
     pub arg: u32,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Memory {
     data: Vec<u8>,
     dirty: BitSet,
@@ -107,20 +107,20 @@ impl Memory {
 pub enum MemorySnapshot {
     Baseline(Vec<u8>),
     Delta {
-        baseline: Rc<Self>,
+        baseline: Arc<Self>,
         chunks: HashMap<usize, Vec<u8>>,
     },
 }
 
 impl Snapshot for Memory {
-    type Snapshot = Rc<MemorySnapshot>;
+    type Snapshot = Arc<MemorySnapshot>;
 
     fn take_snapshot(&self, baseline: Option<&Self::Snapshot>) -> Self::Snapshot {
         if let Some(base_snap) = baseline
             && let MemorySnapshot::Baseline(base_mem) = &**base_snap
         {
-            Rc::new(MemorySnapshot::Delta {
-                baseline: Rc::clone(base_snap),
+            Arc::new(MemorySnapshot::Delta {
+                baseline: Arc::clone(base_snap),
                 chunks: self
                     .dirty
                     .iter()
@@ -136,7 +136,7 @@ impl Snapshot for Memory {
                     .collect(),
             })
         } else {
-            Rc::new(MemorySnapshot::Baseline(self.data.clone()))
+            Arc::new(MemorySnapshot::Baseline(self.data.clone()))
         }
     }
 
@@ -159,7 +159,7 @@ impl Snapshot for Memory {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Vm {
     pub code: Vec<Instruction>,
     pub memory: Memory,

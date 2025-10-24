@@ -9,6 +9,14 @@ use std::{
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
+pub fn angle_to_short(x: f32) -> u16 {
+    (x * u16::MAX as f32 / 360.0) as i32 as u16
+}
+
+pub fn short_to_angle(x: u16) -> f32 {
+    x as f32 * 360.0 / u16::MAX as f32
+}
+
 /// A safe wrapper around functions related to the currently loaded map.
 pub struct Map {
     pub entity_tokens: std::vec::IntoIter<String>,

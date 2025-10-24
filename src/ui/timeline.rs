@@ -1,5 +1,7 @@
 use eframe::egui::{Align2, FontId, Mesh, NumExt, Rangef, Shape, Ui, pos2, remap};
 
+use crate::run::Run;
+
 pub struct Timeline {
     pub visible_range: Rangef,
     pub max_range: Rangef,
@@ -15,9 +17,9 @@ impl Timeline {
         }
     }
 
-    pub fn show(&mut self, ui: &mut Ui) {
+    pub fn show(&mut self, ui: &mut Ui, run: &Run) {
         ui.set_min_height(24.0);
-        self.paint_ticks(ui);
+        self.paint_ticks(ui, run);
         self.paint_playhead(ui);
         self.interact(ui);
     }
@@ -64,7 +66,7 @@ impl Timeline {
         self.visible_range = self.visible_range.intersection(self.max_range);
     }
 
-    fn paint_ticks(&self, ui: &mut Ui) {
+    fn paint_ticks(&self, ui: &mut Ui, run: &Run) {
         let rect = ui.max_rect();
 
         let mut division = 1.0;
@@ -75,28 +77,31 @@ impl Timeline {
         let first_tick = (self.visible_range.min / division).ceil() as i32;
         let last_tick = (self.visible_range.max / division).floor() as i32;
 
+        let last_valid_time = run.num_frames_with_valid_snapshot() as f32 * 0.008;
+
         for tick in first_tick..=last_tick {
-            let x = remap(tick as f32 * division, self.visible_range, rect.x_range());
             let big_tick = tick % 4 == 0;
             let height = if big_tick { 12.0 } else { 8.0 };
-            let stroke = if big_tick {
+
+            let t = tick as f32 * division;
+
+            let stroke = if t < last_valid_time && big_tick {
                 ui.visuals().widgets.noninteractive.fg_stroke
             } else {
                 ui.visuals().widgets.noninteractive.bg_stroke
             };
+
+            let x = remap(t, self.visible_range, rect.x_range());
             ui.painter()
                 .vline(x, rect.top()..=rect.top() + height, stroke);
-        }
 
-        for tick in first_tick..=last_tick {
             if tick % 16 == 0 {
-                let x = remap(tick as f32 * division, self.visible_range, rect.x_range());
                 ui.painter().text(
                     pos2(x + 2.0, rect.top() + 12.0),
                     Align2::CENTER_TOP,
-                    format!("{}s", tick as f32 * division),
+                    format!("{}s", t),
                     FontId::proportional(12.0),
-                    ui.visuals().text_color(),
+                    stroke.color,
                 );
             }
         }

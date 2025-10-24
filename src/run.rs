@@ -1,0 +1,203 @@
+use std::{
+    sync::{Arc, Mutex},
+    thread,
+};
+
+use bytemuck::Zeroable;
+
+use crate::{Snapshot as _, fs::Fs, game::Game, q3::usercmd_t};
+
+pub const SNAPSHOT_INTERVAL: usize = 125;
+
+type Snapshot = <Game as crate::Snapshot>::Snapshot;
+
+/// Data that is shared between threads and should all be locked at once.
+pub struct Shared {
+    /// User inputs for each frame of simulation.
+    pub usercmds: Vec<usercmd_t>,
+
+    /// Cached state of the whole game every `SNAPSHOT_INTERVAL` frames to speed up seeking.
+    pub snapshots: Vec<Option<Snapshot>>,
+
+    /// The number of up-to-date snapshots.
+    num_valid_snapshots: usize,
+
+    /// The number of usercmds the snapshot thread is aware of.
+    num_processed_usercmds: usize,
+}
+
+impl Shared {
+    pub fn has_valid_snapshot(&self, frame: usize) -> bool {
+        frame < self.num_valid_snapshots * SNAPSHOT_INTERVAL
+    }
+
+    fn invalidate(&mut self, frame: usize) {
+        self.num_valid_snapshots = self.num_valid_snapshots.min(frame / SNAPSHOT_INTERVAL + 1);
+        self.num_processed_usercmds = self.num_processed_usercmds.min(frame);
+    }
+}
+
+pub struct Run {
+    pub game: Game,
+    shared: Arc<Mutex<Shared>>,
+    snapshot_thread: thread::JoinHandle<()>,
+
+    /// Is the current state of `game` based on old usercmds?
+    stale: bool,
+}
+
+impl Run {
+    pub fn new(fs: &Fs) -> Self {
+        let mut game = Game::new(fs, "vm/qagame.qvm");
+        game.cvars.set("dedicated", "1".to_string());
+        game.cvars.set("df_promode", "1".to_string());
+        game.init();
+        game.vm.memory.clear_dirty();
+        let baseline = game.take_snapshot(None);
+
+        let shared = Arc::new(Mutex::new(Shared {
+            snapshots: vec![Some(game.take_snapshot(Some(&baseline)))],
+            usercmds: vec![],
+            num_valid_snapshots: 1,
+            num_processed_usercmds: 0,
+        }));
+
+        let snapshot_thread = {
+            // Make a copy of the game just for generating snapshots so we don't need to lock it
+            let mut game = game.clone();
+
+            let shared = Arc::clone(&shared);
+
+            thread::spawn(move || {
+                loop {
+                    // Wait for invalid snapshots to work on
+                    loop {
+                        {
+                            let shared = shared.lock().unwrap();
+                            if shared.num_valid_snapshots < shared.snapshots.len() {
+                                break;
+                            }
+                        }
+                        thread::park();
+                    }
+
+                    // Start from the last valid snapshot
+                    let next_snapshot_num;
+                    let num_processed_usercmds;
+                    let usercmds;
+                    {
+                        let mut shared = shared.lock().unwrap();
+
+                        shared.num_processed_usercmds =
+                            (shared.num_processed_usercmds + 1).next_multiple_of(SNAPSHOT_INTERVAL);
+                        num_processed_usercmds = shared.num_processed_usercmds;
+
+                        next_snapshot_num = num_processed_usercmds / SNAPSHOT_INTERVAL;
+
+                        usercmds = shared.usercmds[(next_snapshot_num - 1) * SNAPSHOT_INTERVAL..]
+                            [..SNAPSHOT_INTERVAL]
+                            .to_owned();
+
+                        // TODO: Could this hold the lock for too long? If so maybe we could box
+                        // the snaphots and temporarily .take() the one we neeed and decrement
+                        // num_valid_snapshots while restoring. Boxing would make moving cheap,
+                        // which might also speed up adding the new valid snapshot below.
+                        game.restore_from_snapshot(
+                            shared.snapshots[next_snapshot_num - 1].as_ref().unwrap(),
+                        );
+                    }
+
+                    // Simulate to the next snapshot
+                    for usercmd in usercmds {
+                        game.run_frame(usercmd);
+                    }
+                    let snapshot = game.take_snapshot(Some(&baseline));
+
+                    // Save it unless it's already been invalidated again
+                    {
+                        let mut shared = shared.lock().unwrap();
+                        if shared.num_processed_usercmds == num_processed_usercmds {
+                            shared.snapshots[next_snapshot_num] = Some(snapshot);
+                            shared.num_valid_snapshots = next_snapshot_num + 1;
+                        }
+                    }
+                }
+            })
+        };
+
+        Self {
+            game,
+            shared,
+            snapshot_thread,
+            stale: false,
+        }
+    }
+
+    pub fn set_usercmds(&mut self, start_frame: usize, usercmds: &[usercmd_t]) {
+        if start_frame <= self.game.frame() {
+            self.stale = true;
+        }
+
+        let mut shared = self.shared.lock().unwrap();
+
+        let new_len = shared.usercmds.len().max(start_frame + usercmds.len());
+        shared.usercmds.resize(new_len, usercmd_t::zeroed());
+        shared.usercmds[start_frame..][..usercmds.len()].copy_from_slice(usercmds);
+
+        let new_num_snapshots = new_len / SNAPSHOT_INTERVAL + 1;
+        shared.snapshots.resize_with(new_num_snapshots, || None);
+
+        shared.invalidate(start_frame);
+        self.snapshot_thread.thread().unpark();
+    }
+
+    pub fn with_usercmd_mut<R>(&mut self, frame: usize, f: impl FnOnce(&mut usercmd_t) -> R) -> R {
+        if frame <= self.game.frame() {
+            self.stale = true;
+        }
+
+        let mut shared = self.shared.lock().unwrap();
+
+        let usercmd = &mut shared.usercmds[frame];
+        let result = f(usercmd);
+
+        shared.invalidate(frame);
+        self.snapshot_thread.thread().unpark();
+
+        result
+    }
+
+    pub fn with_usercmd<R>(&mut self, frame: usize, f: impl FnOnce(&usercmd_t) -> R) -> R {
+        let shared = self.shared.lock().unwrap();
+        let usercmd = &shared.usercmds[frame];
+        f(usercmd)
+    }
+
+    pub fn seek(&mut self, frame: usize) {
+        let shared = self.shared.lock().unwrap();
+
+        // If the current state is valid and we're not trying to rewind or seek more than
+        // SNAPSHOT_INTERVAL ahead then we can just simulate forward. Otherwise, restore the
+        // most recent snapshot first.
+        if self.stale || frame < self.game.frame() || frame >= self.game.frame() + SNAPSHOT_INTERVAL
+        {
+            if !shared.has_valid_snapshot(frame) {
+                self.stale = true;
+                return;
+            }
+            let snapshot = shared.snapshots[frame / SNAPSHOT_INTERVAL]
+                .as_ref()
+                .unwrap();
+            self.game.restore_from_snapshot(snapshot);
+            self.stale = false;
+        }
+
+        while self.game.frame() <= frame {
+            self.game.run_frame(shared.usercmds[self.game.frame()]);
+        }
+    }
+
+    pub fn num_frames_with_valid_snapshot(&self) -> usize {
+        self.shared.lock().unwrap().num_valid_snapshots * SNAPSHOT_INTERVAL
+    }
+}

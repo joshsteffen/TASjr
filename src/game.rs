@@ -12,7 +12,7 @@ use crate::{
     vm::{ExitReason, Vm},
 };
 
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub struct Cvars {
     cvars: HashMap<String, String>,
     registered: Vec<String>,
@@ -69,6 +69,7 @@ impl<T> GameData<T> {
     }
 }
 
+#[derive(Clone)]
 pub struct Game {
     pub cvars: Cvars,
     pub vm: Vm,
@@ -110,6 +111,14 @@ impl Game {
     pub fn run_frame(&mut self, usercmd: usercmd_t) {
         self.usercmd = usercmd;
         self.usercmd.serverTime = self.time;
+
+        // We use absolute angles, but the game expects them to be relative to delta_angles
+        let ps = self
+            .vm
+            .memory
+            .cast_mut::<playerState_t>(self.clients.unwrap().address);
+        (0..3).for_each(|i| self.usercmd.angles[i] -= ps.delta_angles[i]);
+
         self.g_client_think(0);
         self.g_run_frame(self.time);
         self.time += 8;
@@ -117,6 +126,17 @@ impl Game {
 
     pub fn relative_time(&self) -> i32 {
         self.time - self.init_time
+    }
+
+    pub fn frame(&self) -> usize {
+        assert!(self.relative_time() % 8 == 0);
+        (self.relative_time() / 8) as usize
+    }
+
+    pub fn ps(&self) -> &playerState_t {
+        self.vm
+            .memory
+            .cast::<playerState_t>(self.clients.unwrap().address)
     }
 
     fn call_vm(&mut self, args: [u32; 10]) -> u32 {
@@ -361,21 +381,17 @@ impl Game {
                 self.vm.set_result(0);
             }
             G_POINT_CONTENTS => {
-                eprintln!("G_POINT_CONTENTS");
                 let p = self.vm.memory.read::<[f32; 3]>(self.vm.read_arg(0));
                 self.vm
                     .set_result(Map::instance().point_contents(&p, 0) as u32);
             }
             G_LINKENTITY => {
-                eprintln!("G_LINKENTITY");
                 self.vm.set_result(0);
             }
             G_UNLINKENTITY => {
-                eprintln!("G_UNLINKENTITY");
                 self.vm.set_result(0);
             }
             G_ENTITIES_IN_BOX => {
-                eprintln!("G_ENTITIES_IN_BOX");
                 self.vm.set_result(0);
             }
             G_GET_USERCMD => {
