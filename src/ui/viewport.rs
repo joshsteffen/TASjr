@@ -33,7 +33,7 @@ pub fn first_person_ui(
         renderer
             .lock()
             .unwrap()
-            .render(info, origin, viewangles.into(), false);
+            .render(info, origin, viewangles.into());
     });
 
     if frame >= run.num_frames_with_valid_snapshot() {
@@ -99,10 +99,7 @@ impl FlyCam {
     pub fn ui(&mut self, ui: &mut egui::Ui, renderer: Arc<Mutex<Renderer>>) {
         let (position, angles) = (self.position, self.angles);
         viewport(ui, move |info| {
-            renderer
-                .lock()
-                .unwrap()
-                .render(info, position, angles, true);
+            renderer.lock().unwrap().render(info, position, angles);
         });
 
         let response = ui.interact(ui.min_rect(), ui.id(), egui::Sense::drag());

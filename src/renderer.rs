@@ -11,33 +11,36 @@ use three_d::*;
 use crate::{
     bsp::{Bsp, MapSurfaceType},
     fs::Fs,
+    run::Run,
 };
 
 pub struct Renderer {
     context: Context,
     map_model: Option<Gm<Mesh, NormalMaterial>>,
-    player_model: Gm<Mesh, ColorMaterial>,
+    bounding_box_model: Gm<InstancedMesh, ColorMaterial>,
 }
 
 impl Renderer {
     pub fn new(gl: Arc<glow::Context>) -> Self {
         let context = Context::from_gl_context(gl).unwrap();
 
-        let mut mesh = CpuMesh::cube();
-        mesh.transform(
-            Mat4::from_translation(vec3(0.0, 0.0, 4.0))
-                * Mat4::from_nonuniform_scale(15.0, 15.0, 28.0),
-        )
-        .unwrap();
-        let player_model = Gm::new(
-            Mesh::new(&context, &mesh),
-            ColorMaterial::new_opaque(&context, &CpuMaterial::default()),
+        let mut material = ColorMaterial::new_transparent(
+            &context,
+            &CpuMaterial {
+                albedo: Srgba::new(255, 255, 255, 128),
+                ..Default::default()
+            },
+        );
+        material.render_states.cull = Cull::Back;
+        let bounding_box_model = Gm::new(
+            InstancedMesh::new(&context, &Instances::default(), &CpuMesh::cube()),
+            material,
         );
 
         Self {
             context,
             map_model: None,
-            player_model,
+            bounding_box_model,
         }
     }
 
@@ -100,18 +103,34 @@ impl Renderer {
         self.map_model = Some(Gm::new(Mesh::new(&self.context, &mesh), material));
     }
 
-    pub fn set_player_origin(&mut self, origin: Vec3) {
-        self.player_model
-            .set_transformation(Mat4::from_translation(origin));
+    pub fn update(&mut self, run: &Run) {
+        let g_entities = run.game.g_entities.unwrap();
+
+        let mut instances = Instances {
+            transformations: vec![Mat4::identity(); g_entities.count as usize],
+            ..Default::default()
+        };
+
+        for i in 0..g_entities.count {
+            let ent = run.game.entity(i);
+
+            let origin: Vec3 = ent.r.currentOrigin.into();
+            let mins: Vec3 = origin + Vec3::from(ent.r.mins);
+            let maxs: Vec3 = origin + Vec3::from(ent.r.maxs);
+
+            if mins != maxs {
+                let center = (mins + maxs) * 0.5;
+                let size = (maxs - mins) * 0.5;
+
+                instances.transformations[i as usize] =
+                    Mat4::from_translation(center) * Mat4::from_diagonal(size.extend(1.0));
+            }
+        }
+
+        self.bounding_box_model.set_instances(&instances);
     }
 
-    pub fn render(
-        &self,
-        info: egui::PaintCallbackInfo,
-        origin: Vec3,
-        angles: Vec3,
-        show_player: bool,
-    ) {
+    pub fn render(&self, info: egui::PaintCallbackInfo, origin: Vec3, angles: Vec3) {
         let screen = RenderTarget::screen(
             &self.context,
             info.screen_size_px[0],
@@ -147,10 +166,12 @@ impl Renderer {
                     scissor_box,
                     ClearState::color_and_depth(0.0, 0.0, 0.0, 1.0, 1.0),
                 )
-                .render_partially(scissor_box, &camera, map_model, &[]);
-        }
-        if show_player {
-            screen.render_partially(scissor_box, &camera, &self.player_model, &[]);
+                .render_partially(
+                    scissor_box,
+                    &camera,
+                    map_model.into_iter().chain(&self.bounding_box_model),
+                    &[],
+                );
         }
     }
 }

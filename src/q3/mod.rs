@@ -90,8 +90,54 @@ impl Map {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn transformed_box_trace(
+        &self,
+        trace: &mut trace_t,
+        start: &vec3_t,
+        end: &vec3_t,
+        mins: &vec3_t,
+        maxs: &vec3_t,
+        model: clipHandle_t,
+        brushmask: i32,
+        origin: &vec3_t,
+        angles: &vec3_t,
+        capsule: bool,
+    ) {
+        assert!(self.loaded);
+        unsafe {
+            CM_TransformedBoxTrace(
+                trace,
+                start.as_ptr(),
+                end.as_ptr(),
+                mins.as_ptr(),
+                maxs.as_ptr(),
+                model,
+                brushmask,
+                origin.as_ptr(),
+                angles.as_ptr(),
+                capsule as qboolean,
+            );
+        }
+    }
+
     pub fn point_contents(&self, p: &vec3_t, model: clipHandle_t) -> i32 {
         assert!(self.loaded);
         unsafe { CM_PointContents(p.as_ptr(), model) }
+    }
+
+    pub fn inline_model(&self, index: i32) -> clipHandle_t {
+        assert!(self.loaded);
+        unsafe { CM_InlineModel(index) }
+    }
+
+    pub fn model_bounds(&self, model: clipHandle_t, mins: &mut vec3_t, maxs: &mut vec3_t) {
+        assert!(self.loaded);
+        unsafe { CM_ModelBounds(model, mins.as_mut_ptr(), maxs.as_mut_ptr()) }
+    }
+
+    pub fn temp_box_model(&self, mins: &vec3_t, maxs: &vec3_t, capsule: bool) -> clipHandle_t {
+        assert!(self.loaded);
+        unsafe { CM_TempBoxModel(mins.as_ptr(), maxs.as_ptr(), capsule as i32) }
     }
 }

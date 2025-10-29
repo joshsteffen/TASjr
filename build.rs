@@ -4,21 +4,11 @@ use std::{env, path::PathBuf};
 struct Callbacks;
 
 impl bindgen::callbacks::ParseCallbacks for Callbacks {
-    fn add_derives(&self, info: &bindgen::callbacks::DeriveInfo<'_>) -> Vec<String> {
-        if info.name == "cplane_s"
-            || info.name == "playerState_s"
-            || info.name == "qboolean"
-            || info.name == "trace_t"
-            || info.name == "usercmd_s"
-            || info.name == "vmCvar_t"
-        {
-            vec![
-                "bytemuck::Pod".to_string(),
-                "bytemuck::Zeroable".to_string(),
-            ]
-        } else {
-            vec![]
-        }
+    fn add_derives(&self, _info: &bindgen::callbacks::DeriveInfo<'_>) -> Vec<String> {
+        vec![
+            "bytemuck::Pod".to_string(),
+            "bytemuck::Zeroable".to_string(),
+        ]
     }
 }
 
@@ -49,7 +39,11 @@ fn main() {
         .allowlist_function("CM_LoadMap")
         .allowlist_function("CM_EntityString")
         .allowlist_function("CM_BoxTrace")
+        .allowlist_function("CM_TransformedBoxTrace")
         .allowlist_function("CM_PointContents")
+        .allowlist_function("CM_InlineModel")
+        .allowlist_function("CM_ModelBounds")
+        .allowlist_function("CM_TempBoxModel")
         .allowlist_type("gameImport_t")
         .allowlist_type("gameExport_t")
         .allowlist_type("playerState_t")
@@ -58,6 +52,7 @@ fn main() {
         .allowlist_type("vmCvar_t")
         .allowlist_type("opcode_t")
         .allowlist_type("sharedEntity_t")
+        .allowlist_type("qtime_t")
         .allowlist_item("ENTITYNUM_NONE")
         .allowlist_item("ENTITYNUM_WORLD")
         .allowlist_item("MAX_CLIENTS")

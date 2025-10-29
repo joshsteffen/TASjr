@@ -74,10 +74,7 @@ impl eframe::App for App {
 
         let frame = (self.timeline.playhead * 1000.0) as usize / 8;
 
-        self.renderer
-            .lock()
-            .unwrap()
-            .set_player_origin(self.run.game.ps().origin.into());
+        self.renderer.lock().unwrap().update(&self.run);
 
         if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
             self.playing = !self.playing;

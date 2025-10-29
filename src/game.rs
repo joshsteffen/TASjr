@@ -1,13 +1,18 @@
-use std::{collections::HashMap, marker::PhantomData, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    marker::PhantomData,
+    path::Path,
+};
 
 use bytemuck::{Zeroable, cast, cast_slice_mut};
+use glam::Vec3;
 
 use crate::{
     Snapshot,
     fs::Fs,
     q3::{
         ENTITYNUM_NONE, ENTITYNUM_WORLD, MAX_CLIENTS, Map, gameExport_t::*, gameImport_t::*,
-        playerState_t, sharedEntity_t, sharedTraps_t::*, trace_t, usercmd_t, vmCvar_t,
+        playerState_t, qtime_t, sharedEntity_t, sharedTraps_t::*, trace_t, usercmd_t, vmCvar_t,
     },
     vm::{ExitReason, Vm},
 };
@@ -67,6 +72,14 @@ impl<T> GameData<T> {
             phantom: PhantomData,
         }
     }
+
+    fn index_of(&self, address: u32) -> u32 {
+        (address - self.address) / self.sizeof
+    }
+
+    fn address(&self, index: u32) -> u32 {
+        self.address + index * self.sizeof
+    }
 }
 
 #[derive(Clone)]
@@ -78,6 +91,7 @@ pub struct Game {
     pub init_time: i32,
     pub time: i32,
     usercmd: usercmd_t,
+    linked_entities: HashSet<u32>,
 }
 
 impl Game {
@@ -96,13 +110,16 @@ impl Game {
             usercmd: usercmd_t::zeroed(),
             init_time: 0,
             time: 0,
+            linked_entities: HashSet::new(),
         }
     }
 
     pub fn init(&mut self) {
         self.g_init(0, 0, false);
-        self.g_run_frame(0);
-        self.time += 8;
+        for _ in 0..3 {
+            self.g_run_frame(self.time);
+            self.time += 100;
+        }
         self.init_time = self.time;
         self.g_client_connect(0, true, false).unwrap();
         self.g_client_begin(0);
@@ -134,9 +151,11 @@ impl Game {
     }
 
     pub fn ps(&self) -> &playerState_t {
-        self.vm
-            .memory
-            .cast::<playerState_t>(self.clients.unwrap().address)
+        self.vm.memory.cast(self.clients.unwrap().address)
+    }
+
+    pub fn entity(&self, index: u32) -> &sharedEntity_t {
+        self.vm.memory.cast(self.g_entities.unwrap().address(index))
     }
 
     fn call_vm(&mut self, args: [u32; 10]) -> u32 {
@@ -350,7 +369,15 @@ impl Game {
                 self.vm.set_result(0);
             }
             G_SET_BRUSH_MODEL => {
-                eprintln!("G_SET_BRUSH_MODEL");
+                let ent_addr = self.vm.read_arg(0);
+                let name = self.vm.memory.cstr(self.vm.read_arg(1)).to_string_lossy();
+                let model = Map::instance().inline_model(name[1..].parse().unwrap());
+                let ent = self.vm.memory.cast_mut::<sharedEntity_t>(ent_addr);
+                Map::instance().model_bounds(model, &mut ent.r.mins, &mut ent.r.maxs);
+                ent.s.modelindex = model;
+                ent.r.bmodel = 1;
+                ent.r.contents = -1;
+                self.link_entity(ent_addr);
                 self.vm.set_result(0);
             }
             G_TRACE => {
@@ -359,12 +386,13 @@ impl Game {
                 let mins = self.vm.memory.read::<[f32; 3]>(self.vm.read_arg(2));
                 let maxs = self.vm.memory.read::<[f32; 3]>(self.vm.read_arg(3));
                 let end = self.vm.memory.read::<[f32; 3]>(self.vm.read_arg(4));
-                let _pass_entity_num = self.vm.read_arg::<i32>(5);
+                let pass_entity_num = self.vm.read_arg::<i32>(5);
                 let content_mask = self.vm.read_arg::<i32>(6);
-                let trace = self.vm.memory.cast_mut::<trace_t>(results);
-                *trace = trace_t::zeroed();
+
+                let mut clip_trace = trace_t::zeroed();
+
                 Map::instance().box_trace(
-                    trace,
+                    &mut clip_trace,
                     &start,
                     &end,
                     &mins,
@@ -373,11 +401,98 @@ impl Game {
                     content_mask,
                     false,
                 );
-                trace.entityNum = if trace.fraction == 1.0 {
+
+                clip_trace.entityNum = if clip_trace.fraction == 1.0 {
                     ENTITYNUM_NONE
                 } else {
                     ENTITYNUM_WORLD
                 } as i32;
+
+                if clip_trace.fraction == 0.0 {
+                    *self.vm.memory.cast_mut::<trace_t>(results) = clip_trace;
+                    self.vm.set_result(0);
+                    return;
+                }
+
+                let box_mins = Vec3::min(Vec3::from(start), Vec3::from(end)) + Vec3::from(mins)
+                    - Vec3::splat(1.0);
+                let box_maxs = Vec3::max(Vec3::from(start), Vec3::from(end))
+                    + Vec3::from(maxs)
+                    + Vec3::splat(1.0);
+
+                let mut pass_owner_num = -1;
+                if pass_entity_num != ENTITYNUM_NONE as _ {
+                    let owner_num = self.entity(pass_entity_num as _).r.ownerNum;
+                    if owner_num != ENTITYNUM_NONE as _ {
+                        pass_owner_num = owner_num;
+                    }
+                }
+
+                for n in self.entities_in_box(box_mins, box_maxs) {
+                    if clip_trace.allsolid != 0 {
+                        *self.vm.memory.cast_mut::<trace_t>(results) = clip_trace;
+                        self.vm.set_result(0);
+                        return;
+                    }
+
+                    let ent = self.entity(n);
+
+                    if pass_entity_num != ENTITYNUM_NONE as _
+                        && (n == pass_entity_num as _
+                            || ent.r.ownerNum == pass_entity_num
+                            || ent.r.ownerNum == pass_owner_num)
+                    {
+                        continue;
+                    }
+
+                    if content_mask & ent.r.contents == 0 {
+                        continue;
+                    }
+
+                    let clip_handle = if ent.r.bmodel != 0 {
+                        Map::instance().inline_model(ent.s.modelindex)
+                    } else {
+                        Map::instance().temp_box_model(&ent.r.mins, &ent.r.maxs, false)
+                    };
+
+                    let origin = ent.r.currentOrigin;
+                    let angles = if ent.r.bmodel == 0 {
+                        [0.0; 3]
+                    } else {
+                        ent.r.currentAngles
+                    };
+
+                    let mut trace = trace_t::zeroed();
+                    Map::instance().transformed_box_trace(
+                        &mut trace,
+                        &start,
+                        &end,
+                        &mins,
+                        &maxs,
+                        clip_handle,
+                        content_mask,
+                        &origin,
+                        &angles,
+                        false,
+                    );
+
+                    if trace.allsolid != 0 {
+                        clip_trace.allsolid = 1;
+                        trace.entityNum = ent.s.number;
+                    } else if trace.startsolid != 0 {
+                        clip_trace.startsolid = 1;
+                        trace.entityNum = ent.s.number;
+                    }
+
+                    if trace.fraction < clip_trace.fraction {
+                        let old_start = clip_trace.startsolid;
+                        trace.entityNum = ent.s.number;
+                        clip_trace = trace;
+                        clip_trace.startsolid |= old_start;
+                    }
+                }
+
+                *self.vm.memory.cast_mut::<trace_t>(results) = clip_trace;
                 self.vm.set_result(0);
             }
             G_POINT_CONTENTS => {
@@ -386,13 +501,57 @@ impl Game {
                     .set_result(Map::instance().point_contents(&p, 0) as u32);
             }
             G_LINKENTITY => {
+                self.link_entity(self.vm.read_arg(0));
                 self.vm.set_result(0);
             }
             G_UNLINKENTITY => {
+                self.linked_entities.remove(&self.vm.read_arg(0));
                 self.vm.set_result(0);
             }
             G_ENTITIES_IN_BOX => {
-                self.vm.set_result(0);
+                let mins = self.vm.memory.read::<[f32; 3]>(self.vm.read_arg(0));
+                let maxs = self.vm.memory.read::<[f32; 3]>(self.vm.read_arg(1));
+                let entity_list = self.vm.read_arg::<u32>(2);
+                let max_count = self.vm.read_arg::<u32>(3);
+
+                let entities = self
+                    .entities_in_box(mins.into(), maxs.into())
+                    .into_iter()
+                    .take(max_count as usize);
+
+                self.vm.set_result(entities.len() as u32);
+
+                entities.enumerate().for_each(|(i, ent)| {
+                    self.vm.memory.write(entity_list + 4 * i as u32, ent);
+                });
+            }
+            G_ENTITY_CONTACT => {
+                let mins = self.vm.memory.read::<[f32; 3]>(self.vm.read_arg(0));
+                let maxs = self.vm.memory.read::<[f32; 3]>(self.vm.read_arg(1));
+                let ent = self.vm.memory.cast::<sharedEntity_t>(self.vm.read_arg(2));
+
+                let clip_handle = if ent.r.bmodel != 0 {
+                    Map::instance().inline_model(ent.s.modelindex)
+                } else {
+                    Map::instance().temp_box_model(&ent.r.mins, &ent.r.maxs, false)
+                };
+
+                let mut trace = trace_t::zeroed();
+
+                Map::instance().transformed_box_trace(
+                    &mut trace,
+                    &[0.0; 3],
+                    &[0.0; 3],
+                    &mins,
+                    &maxs,
+                    clip_handle,
+                    -1,
+                    &ent.r.currentOrigin,
+                    &ent.r.currentAngles,
+                    false,
+                );
+
+                self.vm.set_result(trace.startsolid);
             }
             G_GET_USERCMD => {
                 self.vm.memory.write(self.vm.read_arg(1), self.usercmd);
@@ -411,6 +570,11 @@ impl Game {
                 } else {
                     self.vm.set_result(0);
                 }
+            }
+            G_REAL_TIME => {
+                let qtime = self.vm.memory.cast_mut::<qtime_t>(self.vm.read_arg(0));
+                *qtime = qtime_t::zeroed();
+                self.vm.set_result(0);
             }
             G_SNAPVECTOR => {
                 self.vm
@@ -445,6 +609,10 @@ impl Game {
             TRAP_COS => {
                 self.vm.set_result(cast(self.vm.read_arg::<f32>(0).cos()));
             }
+            TRAP_ATAN2 => {
+                self.vm
+                    .set_result(cast(f32::atan2(self.vm.read_arg(0), self.vm.read_arg(1))));
+            }
             TRAP_SQRT => {
                 self.vm.set_result(cast(self.vm.read_arg::<f32>(0).sqrt()));
             }
@@ -458,6 +626,40 @@ impl Game {
             _ => unimplemented!("syscall {syscall:?}"),
         };
     }
+
+    fn link_entity(&mut self, ent: u32) {
+        self.linked_entities.insert(ent);
+
+        let ent = self.vm.memory.cast_mut::<sharedEntity_t>(ent);
+
+        let origin = Vec3::from(ent.r.currentOrigin);
+        let angles = Vec3::from(ent.r.currentAngles);
+        let mins = Vec3::from(ent.r.mins);
+        let maxs = Vec3::from(ent.r.maxs);
+
+        let (absmin, absmax) = if ent.r.bmodel != 0 && angles != Vec3::ZERO {
+            let radius = Vec3::splat(mins.abs().max(maxs.abs()).length());
+            (origin - radius, origin + radius)
+        } else {
+            (origin + mins, origin + maxs)
+        };
+
+        ent.r.absmin = (absmin - Vec3::ONE).into();
+        ent.r.absmax = (absmax + Vec3::ONE).into();
+    }
+
+    fn entities_in_box(&self, mins: Vec3, maxs: Vec3) -> Vec<u32> {
+        let g_entities = self.g_entities.unwrap();
+        self.linked_entities
+            .iter()
+            .cloned()
+            .filter(|&ent| {
+                let ent = self.vm.memory.cast::<sharedEntity_t>(ent);
+                maxs.cmpge(ent.r.absmin.into()).all() && mins.cmple(ent.r.absmax.into()).all()
+            })
+            .map(|ent| g_entities.index_of(ent))
+            .collect()
+    }
 }
 
 pub struct GameSnapshot {
@@ -465,6 +667,7 @@ pub struct GameSnapshot {
     g_entities: Option<GameData<sharedEntity_t>>,
     clients: Option<GameData<playerState_t>>,
     time: i32,
+    linked_entities: HashSet<u32>,
 }
 
 impl Snapshot for Game {
@@ -476,6 +679,7 @@ impl Snapshot for Game {
             g_entities: self.g_entities,
             clients: self.clients,
             time: self.time,
+            linked_entities: self.linked_entities.clone(),
         }
     }
 
@@ -484,5 +688,6 @@ impl Snapshot for Game {
         self.g_entities = snapshot.g_entities;
         self.clients = snapshot.clients;
         self.time = snapshot.time;
+        self.linked_entities = snapshot.linked_entities.clone();
     }
 }
