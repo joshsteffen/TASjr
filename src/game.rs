@@ -421,7 +421,7 @@ impl Game {
                     + Vec3::splat(1.0);
 
                 let mut pass_owner_num = -1;
-                if pass_entity_num != ENTITYNUM_NONE as _ {
+                if pass_entity_num >= 0 && pass_entity_num != ENTITYNUM_NONE as _ {
                     let owner_num = self.entity(pass_entity_num as _).r.ownerNum;
                     if owner_num != ENTITYNUM_NONE as _ {
                         pass_owner_num = owner_num;
