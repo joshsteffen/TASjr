@@ -12,12 +12,12 @@ pub const SNAPSHOT_INTERVAL: usize = 125;
 type Snapshot = <Game as crate::Snapshot>::Snapshot;
 
 /// Data that is shared between threads and should all be locked at once.
-pub struct Shared {
+struct Shared {
     /// User inputs for each frame of simulation.
-    pub usercmds: Vec<usercmd_t>,
+    usercmds: Vec<usercmd_t>,
 
     /// Cached state of the whole game every `SNAPSHOT_INTERVAL` frames to speed up seeking.
-    pub snapshots: Vec<Option<Snapshot>>,
+    snapshots: Vec<Option<Snapshot>>,
 
     /// The number of up-to-date snapshots.
     num_valid_snapshots: usize,
@@ -27,7 +27,7 @@ pub struct Shared {
 }
 
 impl Shared {
-    pub fn has_valid_snapshot(&self, frame: usize) -> bool {
+    fn has_valid_snapshot(&self, frame: usize) -> bool {
         frame < self.num_valid_snapshots * SNAPSHOT_INTERVAL
     }
 
@@ -40,7 +40,14 @@ impl Shared {
 pub struct Run {
     pub game: Game,
     shared: Arc<Mutex<Shared>>,
-    snapshot_thread: thread::JoinHandle<()>,
+
+    /// A snapshot taken after initialization but before any user input occurs that all other
+    /// snapshots are based on.
+    baseline: Arc<Snapshot>,
+
+    /// Generates snapshots in the background when usercmds change.
+    snapshot_worker: thread::JoinHandle<()>,
+    snapshot_worker_enabled: bool,
 
     /// Is the current state of `game` based on old usercmds?
     stale: bool,
@@ -53,11 +60,11 @@ impl Run {
         game.cvars.set("df_promode", "1".to_string());
         game.init();
         game.vm.memory.clear_dirty();
-        let baseline = game.take_snapshot(None);
+        let baseline = Arc::new(game.take_snapshot(None));
 
         let shared = Arc::new(Mutex::new(Shared {
-            snapshots: vec![Some(game.take_snapshot(Some(&baseline)))],
             usercmds: vec![],
+            snapshots: vec![Some(game.take_snapshot(Some(&baseline)))],
             num_valid_snapshots: 1,
             num_processed_usercmds: 0,
         }));
@@ -67,6 +74,7 @@ impl Run {
             let mut game = game.clone();
 
             let shared = Arc::clone(&shared);
+            let baseline = Arc::clone(&baseline);
 
             thread::spawn(move || {
                 loop {
@@ -128,13 +136,15 @@ impl Run {
         Self {
             game,
             shared,
-            snapshot_thread,
+            baseline,
+            snapshot_worker: snapshot_thread,
+            snapshot_worker_enabled: true,
             stale: false,
         }
     }
 
     pub fn set_usercmds(&mut self, start_frame: usize, usercmds: &[usercmd_t]) {
-        if start_frame <= self.game.frame() {
+        if start_frame < self.game.frame() {
             self.stale = true;
         }
 
@@ -148,11 +158,13 @@ impl Run {
         shared.snapshots.resize_with(new_num_snapshots, || None);
 
         shared.invalidate(start_frame);
-        self.snapshot_thread.thread().unpark();
+        if self.snapshot_worker_enabled {
+            self.snapshot_worker.thread().unpark();
+        }
     }
 
     pub fn with_usercmd_mut<R>(&mut self, frame: usize, f: impl FnOnce(&mut usercmd_t) -> R) -> R {
-        if frame <= self.game.frame() {
+        if frame < self.game.frame() {
             self.stale = true;
         }
 
@@ -162,7 +174,9 @@ impl Run {
         let result = f(usercmd);
 
         shared.invalidate(frame);
-        self.snapshot_thread.thread().unpark();
+        if self.snapshot_worker_enabled {
+            self.snapshot_worker.thread().unpark();
+        }
 
         result
     }
@@ -174,13 +188,9 @@ impl Run {
     }
 
     pub fn seek(&mut self, frame: usize) {
-        let shared = self.shared.lock().unwrap();
+        let mut shared = self.shared.lock().unwrap();
 
-        // If the current state is valid and we're not trying to rewind or seek more than
-        // SNAPSHOT_INTERVAL ahead then we can just simulate forward. Otherwise, restore the
-        // most recent snapshot first.
-        if self.stale || frame < self.game.frame() || frame >= self.game.frame() + SNAPSHOT_INTERVAL
-        {
+        if !self.can_step_to(frame) {
             if !shared.has_valid_snapshot(frame) {
                 self.stale = true;
                 return;
@@ -194,10 +204,43 @@ impl Run {
 
         while self.game.frame() <= frame {
             self.game.run_frame(shared.usercmds[self.game.frame()]);
+
+            if !self.snapshot_worker_enabled && self.game.frame() % SNAPSHOT_INTERVAL == 0 {
+                let snapshot_num = self.game.frame() / SNAPSHOT_INTERVAL;
+                assert!(shared.num_valid_snapshots >= snapshot_num);
+                if shared.num_valid_snapshots == snapshot_num {
+                    shared.snapshots[snapshot_num] =
+                        Some(self.game.take_snapshot(Some(&self.baseline)));
+                    shared.num_valid_snapshots = snapshot_num + 1;
+                }
+            }
         }
+    }
+
+    fn can_step_to(&self, frame: usize) -> bool {
+        // If the current state is valid and we're not trying to rewind or seek too far ahead then
+        // we can just simulate forward.
+        let forward_seekable_range = self.game.frame()..=self.game.frame() + SNAPSHOT_INTERVAL;
+        !self.stale && forward_seekable_range.contains(&frame)
+    }
+
+    pub fn can_seek_to(&self, frame: usize) -> bool {
+        let shared = self.shared.lock().unwrap();
+        self.can_step_to(frame) || shared.has_valid_snapshot(frame)
     }
 
     pub fn num_frames_with_valid_snapshot(&self) -> usize {
         self.shared.lock().unwrap().num_valid_snapshots * SNAPSHOT_INTERVAL
+    }
+
+    pub fn enable_snapshot_worker(&mut self) {
+        if !self.snapshot_worker_enabled {
+            self.snapshot_worker_enabled = true;
+            self.snapshot_worker.thread().unpark();
+        }
+    }
+
+    pub fn disable_snapshot_worker(&mut self) {
+        self.snapshot_worker_enabled = false;
     }
 }

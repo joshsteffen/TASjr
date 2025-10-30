@@ -37,7 +37,6 @@ struct App {
     run: Run,
     renderer: Arc<Mutex<Renderer>>,
     timeline: Timeline,
-    playing: bool,
     flycam: FlyCam,
 }
 
@@ -62,7 +61,6 @@ impl App {
             run,
             renderer: Arc::new(Mutex::new(renderer)),
             timeline: Timeline::new((0.0..=duration).into()),
-            playing: false,
             flycam: Default::default(),
         }
     }
@@ -72,20 +70,23 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
         ctx.request_repaint();
 
-        let frame = (self.timeline.playhead * 1000.0) as usize / 8;
-
         self.renderer.lock().unwrap().update(&self.run);
 
-        if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
-            self.playing = !self.playing;
+        // Space is the standard play/pause key, but it's also jump, so enter also works even
+        // during recording.
+        if ctx.input(|i| {
+            !self.timeline.recording && i.key_pressed(egui::Key::Space)
+                || i.key_pressed(egui::Key::Enter)
+        }) {
+            self.timeline.playing = !self.timeline.playing;
         }
 
-        if self.playing {
-            self.timeline.playhead += ctx.input(|i| i.unstable_dt);
-            if self.timeline.playhead >= self.timeline.max_range.max {
-                self.timeline.playhead = self.timeline.max_range.max;
-                self.playing = false;
-            }
+        self.timeline.update(ctx.input(|i| i.unstable_dt));
+
+        if self.timeline.recording {
+            self.run.disable_snapshot_worker();
+        } else {
+            self.run.enable_snapshot_worker();
         }
 
         egui::TopBottomPanel::bottom("timeline")
@@ -108,11 +109,16 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.columns_const(|[left_ui, right_ui]| {
                 self.flycam.ui(left_ui, Arc::clone(&self.renderer));
-                first_person_ui(right_ui, Arc::clone(&self.renderer), &mut self.run, frame);
+                first_person_ui(
+                    right_ui,
+                    Arc::clone(&self.renderer),
+                    &mut self.timeline,
+                    &mut self.run,
+                );
             });
         });
 
-        self.run.seek(frame);
+        self.run.seek(self.timeline.frame());
     }
 }
 

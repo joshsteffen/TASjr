@@ -3,9 +3,9 @@ use std::sync::{Arc, Mutex};
 use eframe::egui;
 use three_d::{InnerSpace, Mat3, Vec3, Zero, degrees, vec3};
 
-use crate::{q3::angle_to_short, renderer::Renderer, run::Run};
+use crate::{q3::angle_to_short, renderer::Renderer, run::Run, ui::Timeline};
 
-const SENSITIVITY: f32 = 0.25;
+const SENSITIVITY: f32 = 0.15;
 
 fn viewport<F>(ui: &mut egui::Ui, f: F)
 where
@@ -23,8 +23,8 @@ where
 pub fn first_person_ui(
     ui: &mut egui::Ui,
     renderer: Arc<Mutex<Renderer>>,
+    timeline: &mut Timeline,
     run: &mut Run,
-    frame: usize,
 ) {
     let ps = run.game.ps();
     let origin = Vec3::from(ps.origin) + vec3(0.0, 0.0, ps.viewheight as f32);
@@ -36,7 +36,9 @@ pub fn first_person_ui(
             .render(info, origin, viewangles.into());
     });
 
-    if frame >= run.num_frames_with_valid_snapshot() {
+    let frame = timeline.frame();
+
+    if !run.can_seek_to(frame) {
         ui.painter().text(
             ui.min_rect().center(),
             egui::Align2::CENTER_CENTER,
@@ -55,26 +57,62 @@ pub fn first_person_ui(
         egui::Sense::drag(),
     );
 
-    if response.drag_started() {
+    if response.is_pointer_button_down_on() {
+        response.request_focus();
+    } else if !timeline.recording {
+        response.surrender_focus();
+    }
+
+    if response.gained_focus() {
         ui.memory_mut(|mem| {
             mem.data.insert_temp(angles_id, viewangles);
             mem.data.insert_temp(last_frame_id, frame);
         });
+        timeline.recording = true;
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::Locked));
     }
 
-    if response.dragged() {
-        let motion = response.drag_motion() * SENSITIVITY;
+    if response.lost_focus() {
+        timeline.recording = false;
+        timeline.playing = false;
+        ui.ctx()
+            .send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
+    }
+
+    // We still want to record the current frame if we just lost focus so that the view doesn't
+    // suddenly jump.
+    if timeline.recording || response.lost_focus() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+
+        let motion =
+            ui.input(|i| i.pointer.motion().unwrap_or_else(|| i.pointer.delta())) * SENSITIVITY;
+
+        let (forward, right, up, attack) = ui.input(|i| {
+            use egui::Key::*;
+            (
+                i.key_down(W) as i8 - i.key_down(S) as i8,
+                i.key_down(D) as i8 - i.key_down(A) as i8,
+                i.key_down(Space) as i8 - i.key_down(C) as i8,
+                i.pointer.primary_down(),
+            )
+        });
+
         ui.memory_mut(|mem| {
             let angles: &mut [f32; 3] = mem.data.get_temp_mut_or_default(angles_id);
             angles[1] -= motion.x;
             angles[0] += motion.y;
             let angles = angles.map(|x| angle_to_short(x) as i32);
 
-            let last_frame = mem.data.get_temp_mut_or_default(last_frame_id);
-            for i in *last_frame..=frame {
+            let last_frame: &mut usize = mem.data.get_temp_mut_or_default(last_frame_id);
+            for i in (*last_frame + 1).min(frame)..=frame {
                 run.with_usercmd_mut(i, |u| {
+                    u.buttons = if attack { 1 } else { 0 };
                     u.angles = angles;
-                })
+                    u.forwardmove = forward * 127;
+                    u.rightmove = right * 127;
+                    u.upmove = up * 127;
+                });
             }
             *last_frame = frame;
         });

@@ -6,6 +6,8 @@ pub struct Timeline {
     pub visible_range: Rangef,
     pub max_range: Rangef,
     pub playhead: f32,
+    pub playing: bool,
+    pub recording: bool,
 }
 
 impl Timeline {
@@ -14,6 +16,23 @@ impl Timeline {
             visible_range: max_range,
             max_range,
             playhead: 0.0,
+            playing: false,
+            recording: false,
+        }
+    }
+
+    pub fn frame(&self) -> usize {
+        (self.playhead * 1000.0) as usize / 8
+    }
+
+    pub fn update(&mut self, dt: f32) {
+        if self.playing {
+            self.playhead += dt;
+            if self.playhead >= self.max_range.max {
+                self.playhead = self.max_range.max;
+                self.playing = false;
+                self.recording = false;
+            }
         }
     }
 
