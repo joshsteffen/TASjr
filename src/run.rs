@@ -188,6 +188,12 @@ impl Run {
     }
 
     pub fn seek(&mut self, frame: usize) {
+        if !self.stale && self.game.frame() == frame + 1 {
+            // If we're just going to run the previous frame again but nothing has changed, we'll
+            // just end up exactly where we are now.
+            return;
+        }
+
         let mut shared = self.shared.lock().unwrap();
 
         if !self.can_step_to(frame) {
