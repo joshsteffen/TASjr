@@ -500,6 +500,9 @@ impl Game {
                 self.vm
                     .set_result(Map::instance().point_contents(&p, 0) as u32);
             }
+            G_ADJUST_AREA_PORTAL_STATE => {
+                self.vm.set_result(0);
+            }
             G_LINKENTITY => {
                 self.link_entity(self.vm.read_arg(0));
                 self.vm.set_result(0);
