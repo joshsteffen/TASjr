@@ -5,6 +5,7 @@ use std::{
 };
 
 use binrw::{BinRead, Endian, binread, helpers::until_eof, io::TakeSeekExt};
+use bytemuck::{Pod, Zeroable};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
@@ -27,7 +28,7 @@ pub struct Bsp {
     pub draw_indexes: Lump<u32>,
     pub fogs: Lump<u8>,
     pub surfaces: Lump<Surface>,
-    pub lightmaps: Lump<u8>,
+    pub lightmaps: Lump<Lightmap>,
     pub lightgrid: Lump<u8>,
     pub visibility: Lump<u8>,
 }
@@ -72,6 +73,15 @@ pub struct Surface {
     pub lightmap_vecs: [[f32; 3]; 3],
     pub patch_width: u32,
     pub patch_height: u32,
+}
+
+pub const LIGHTMAP_BY_VERTEX: i32 = -3;
+pub const LIGHTMAP_SIZE: usize = 128;
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+#[repr(C)]
+#[binread]
+pub struct Lightmap {
+    pub pixels: [[[u8; 3]; LIGHTMAP_SIZE]; LIGHTMAP_SIZE],
 }
 
 #[derive(Debug)]

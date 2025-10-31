@@ -5,18 +5,19 @@ use std::{
 };
 
 use binrw::BinRead;
+use bytemuck::cast_slice;
 use eframe::{egui, glow};
 use three_d::*;
 
 use crate::{
-    bsp::{Bsp, MapSurfaceType},
+    bsp::{Bsp, LIGHTMAP_SIZE, Lightmap, MapSurfaceType},
     fs::Fs,
     run::Run,
 };
 
 pub struct Renderer {
     context: Context,
-    map_model: Option<Gm<Mesh, NormalMaterial>>,
+    map_model: Option<Gm<Mesh, PhysicalMaterial>>,
     bounding_box_model: Gm<InstancedMesh, ColorMaterial>,
 }
 
@@ -27,7 +28,7 @@ impl Renderer {
         let mut material = ColorMaterial::new_transparent(
             &context,
             &CpuMaterial {
-                albedo: Srgba::new(255, 255, 255, 128),
+                albedo: Srgba::new(255, 64, 64, 128),
                 ..Default::default()
             },
         );
@@ -45,60 +46,115 @@ impl Renderer {
     }
 
     pub fn load_bsp(&mut self, fs: &Fs, path: impl AsRef<Path>) {
+        let mut f = fs.open(path).unwrap();
+        let bsp = Bsp::read(&mut f).unwrap();
+        let draw_verts = bsp.draw_verts.read(&mut f).unwrap();
+        let draw_indexes = bsp.draw_indexes.read(&mut f).unwrap();
+
+        let mut lightmaps = bsp.lightmaps.read(&mut f).unwrap();
+
+        let white_lightmap = lightmaps.len();
+        lightmaps.push(Lightmap {
+            pixels: [[[255; _]; _]; _],
+        });
+
         let mut positions = vec![];
         let mut indices = vec![];
-        {
-            let mut f = fs.open(path).unwrap();
-            let bsp = Bsp::read(&mut f).unwrap();
-            let draw_verts = bsp.draw_verts.read(&mut f).unwrap();
-            let draw_indexes = bsp.draw_indexes.read(&mut f).unwrap();
-            for surface in bsp.surfaces.read(&mut f).unwrap() {
-                match surface.surface_type {
-                    MapSurfaceType::Planar | MapSurfaceType::TriangleSoup => {
-                        let first_out_vert = positions.len() as u32;
-                        for i in 0..surface.num_verts {
-                            let vert = &draw_verts[(surface.first_vert + i) as usize];
-                            positions.push(Vec3::from(vert.xyz));
-                        }
-                        for i in 0..surface.num_indexes {
-                            indices.push(
-                                draw_indexes[(surface.first_index + i) as usize] + first_out_vert,
-                            );
-                        }
-                    }
-                    MapSurfaceType::Patch => {
-                        let (first_vert, width, height) = (
-                            surface.first_vert as usize,
-                            surface.patch_width as usize,
-                            surface.patch_height as usize,
-                        );
+        let mut uvs = vec![];
+        let mut colors = vec![];
 
-                        let mut points = Grid::new(width, height);
-                        for i in 0..width {
-                            for j in 0..height {
-                                let vert = &draw_verts[first_vert + i + j * width];
-                                points[(i, j)] = Vec3::from(vert.xyz);
+        for surface in bsp.surfaces.read(&mut f).unwrap() {
+            let lightmap_num = if surface.lightmap_num < 0 {
+                white_lightmap
+            } else {
+                surface.lightmap_num as usize
+            };
+
+            let lightmap_base_uv = vec2(0.0, lightmap_num as f32);
+
+            match surface.surface_type {
+                MapSurfaceType::Planar | MapSurfaceType::TriangleSoup => {
+                    let first_out_vert = positions.len() as u32;
+
+                    for i in 0..surface.num_verts {
+                        let vert = &draw_verts[(surface.first_vert + i) as usize];
+                        positions.push(Vec3::from(vert.xyz));
+                        uvs.push(lightmap_base_uv + Vec2::from(vert.lightmap));
+                        colors.push(if surface.lightmap_num < 0 {
+                            Srgba::from(vert.color)
+                        } else {
+                            Srgba::WHITE
+                        });
+                    }
+
+                    for i in 0..surface.num_indexes {
+                        indices.push(
+                            draw_indexes[(surface.first_index + i) as usize] + first_out_vert,
+                        );
+                    }
+                }
+                MapSurfaceType::Patch => {
+                    let (first_vert, width, height) = (
+                        surface.first_vert as usize,
+                        surface.patch_width as usize,
+                        surface.patch_height as usize,
+                    );
+
+                    let mut points = Grid::new(width, height);
+
+                    for i in 0..width {
+                        for j in 0..height {
+                            let vert = &draw_verts[first_vert + i + j * width];
+                            points[(i, j)] = Vertex {
+                                position: Vec3::from(vert.xyz),
+                                uv: lightmap_base_uv + Vec2::from(vert.lightmap),
                             }
                         }
-
-                        points = tessellate_bezier(points, 16, |a, b, t| Vec3::lerp(*a, *b, t));
-
-                        let first_vert = positions.len() as u32;
-                        let (patch_vertices, patch_indices) = points.triangulate();
-                        positions.extend_from_slice(&patch_vertices);
-                        indices.extend(patch_indices.iter().map(|i| first_vert + i));
                     }
-                    _ => {}
+
+                    points = tessellate_bezier(points, 16, Vertex::lerp);
+
+                    let first_vert = positions.len() as u32;
+                    let (patch_vertices, patch_indices) = points.triangulate();
+                    for vertex in patch_vertices {
+                        positions.push(vertex.position);
+                        uvs.push(vertex.uv);
+                        colors.push(Srgba::WHITE);
+                    }
+                    indices.extend(patch_indices.iter().map(|i| first_vert + i));
                 }
+                _ => {}
             }
         }
+
+        uvs.iter_mut().for_each(|uv| uv.y /= lightmaps.len() as f32);
+
         let mut mesh = CpuMesh {
             positions: Positions::F32(positions),
             indices: Indices::U32(indices),
+            uvs: Some(uvs),
+            colors: Some(colors),
             ..Default::default()
         };
         mesh.compute_normals();
-        let mut material = NormalMaterial::default();
+
+        let (width, height) = (LIGHTMAP_SIZE, lightmaps.len() * LIGHTMAP_SIZE);
+        let lightmap = Texture2D::new_empty::<[u8; 3]>(
+            &self.context,
+            width as u32,
+            height as u32,
+            Interpolation::Linear,
+            Interpolation::Linear,
+            None,
+            Wrapping::ClampToEdge,
+            Wrapping::ClampToEdge,
+        );
+        lightmap.fill::<[u8; 3]>(cast_slice(&lightmaps));
+
+        let mut material = PhysicalMaterial {
+            albedo_texture: Some(Texture2DRef::from_texture(lightmap)),
+            ..Default::default()
+        };
         material.render_states.cull = Cull::Front;
         self.map_model = Some(Gm::new(Mesh::new(&self.context, &mesh), material));
     }
@@ -160,6 +216,20 @@ impl Renderer {
             100000.0,
         );
 
+        let alight = AmbientLight::new(&self.context, 0.35, Srgba::WHITE);
+        let dlight1 = DirectionalLight::new(
+            &self.context,
+            1.0,
+            Srgba::new_opaque(255, 255, 240),
+            vec3(1.0, 2.0, -3.0),
+        );
+        let dlight2 = DirectionalLight::new(
+            &self.context,
+            1.0,
+            Srgba::new_opaque(180, 180, 192),
+            vec3(-2.0, -1.0, -3.0),
+        );
+
         if let Some(map_model) = self.map_model.as_ref() {
             screen
                 .clear_partially(
@@ -170,24 +240,48 @@ impl Renderer {
                     scissor_box,
                     &camera,
                     map_model.into_iter().chain(&self.bounding_box_model),
-                    &[],
+                    &[&alight, &dlight1, &dlight2],
                 );
         }
     }
 }
 
-pub struct Grid<T> {
+#[derive(Clone)]
+struct Vertex {
+    position: Vec3,
+    uv: Vec2,
+}
+
+impl Vertex {
+    fn lerp(a: &Self, b: &Self, t: f32) -> Self {
+        Self {
+            position: Vec3::lerp(a.position, b.position, t),
+            uv: Vec2::lerp(a.uv, b.uv, t),
+        }
+    }
+}
+
+impl Default for Vertex {
+    fn default() -> Self {
+        Self {
+            position: Vec3::zero(),
+            uv: Vec2::zero(),
+        }
+    }
+}
+
+struct Grid<T> {
     size: (usize, usize),
     stride: (usize, usize),
     points: Vec<T>,
 }
 
-impl<T: Clone + Zero> Grid<T> {
+impl<T: Clone + Default> Grid<T> {
     pub fn new(width: usize, height: usize) -> Self {
         Self {
             size: (width, height),
             stride: (1, width),
-            points: vec![T::zero(); width * height],
+            points: vec![T::default(); width * height],
         }
     }
 
@@ -228,9 +322,9 @@ impl<T> IndexMut<(usize, usize)> for Grid<T> {
     }
 }
 
-pub fn tessellate_bezier<T, F>(mut points: Grid<T>, steps: usize, lerp_vertices: F) -> Grid<T>
+fn tessellate_bezier<T, F>(mut points: Grid<T>, steps: usize, lerp_vertices: F) -> Grid<T>
 where
-    T: Clone + Zero,
+    T: Clone + Default,
     F: Fn(&T, &T, f32) -> T,
 {
     let interpolate_bezier = |a: &T, b: &T, c: &T, t: f32| {
