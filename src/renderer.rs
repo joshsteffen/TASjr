@@ -18,14 +18,14 @@ use crate::{
 pub struct Renderer {
     context: Context,
     map_model: Option<Gm<Mesh, PhysicalMaterial>>,
-    bounding_box_model: Gm<InstancedMesh, ColorMaterial>,
+    bounding_box_model: Gm<InstancedMesh, PhysicalMaterial>,
 }
 
 impl Renderer {
     pub fn new(gl: Arc<glow::Context>) -> Self {
         let context = Context::from_gl_context(gl).unwrap();
 
-        let mut material = ColorMaterial::new_transparent(
+        let mut material = PhysicalMaterial::new_transparent(
             &context,
             &CpuMaterial {
                 albedo: Srgba::new(255, 64, 64, 128),
