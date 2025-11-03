@@ -551,7 +551,7 @@ impl Game {
                     false,
                 );
 
-                self.vm.set_result(trace.startsolid);
+                self.vm.set_result(trace.startsolid as _);
             }
             G_GET_USERCMD => {
                 self.vm.memory.write(self.vm.read_arg(1), self.usercmd);
