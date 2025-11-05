@@ -5,7 +5,10 @@ use std::{
 
 use bytemuck::pod_collect_to_vec;
 use clap::Parser;
-use eframe::{egui, glow};
+use eframe::{
+    egui::{self, vec2},
+    glow,
+};
 
 use crate::{
     fs::Fs,
@@ -14,6 +17,7 @@ use crate::{
     run::Run,
     ui::{
         Timeline,
+        curve_editor::curve_editor_ui,
         theme::set_theme,
         viewport::{FlyCam, first_person_ui},
     },
@@ -53,7 +57,13 @@ impl AppState {
 
         let usercmds: Vec<usercmd_t> = pod_collect_to_vec(&std::fs::read(args.usercmds).unwrap());
         let duration = (usercmds.len() - 1) as f32 * 0.008;
-        run.set_usercmds(0, &usercmds);
+        run.with_inputs_mut(|inputs| {
+            for (i, u) in usercmds.iter().enumerate() {
+                inputs.set_usercmd(i, *u);
+            }
+            inputs.len = (duration * 125.0) as usize;
+            inputs.optimize();
+        });
 
         let mut renderer = Renderer::new(gl);
         renderer.load_bsp(&fs, &args.bsp);
@@ -108,7 +118,33 @@ impl egui_dock::TabViewer for AppState {
                 });
             }
             Tab::Timeline => {
-                self.timeline.show(ui, &self.run);
+                ui.vertical(|ui| {
+                    self.timeline.show(ui, &self.run);
+                });
+                ui.vertical(|ui| {
+                    let size = ui.available_size();
+                    let frame_range = self.timeline.visible_range.min * 125.0
+                        ..=self.timeline.visible_range.max * 125.0;
+                    self.run.with_inputs_mut(|inputs| {
+                        let n = inputs.all().count() as f32;
+                        let curve_size = vec2(size.x, size.y / n - 3.0);
+                        for (i, input) in inputs.all_mut().enumerate() {
+                            let color = egui::ecolor::Hsva::new(i as f32 / n, 0.9, 0.25, 1.0);
+                            let (min, max) = input.range();
+                            ui.allocate_ui(curve_size, |ui| {
+                                curve_editor_ui(
+                                    ui,
+                                    egui::Rect::from_x_y_ranges(
+                                        &frame_range,
+                                        max as f32..=min as f32,
+                                    ),
+                                    &mut input.curve,
+                                    color.into(),
+                                );
+                            });
+                        }
+                    })
+                });
             }
         }
     }
@@ -174,12 +210,34 @@ impl eframe::App for App {
             self.app_state.timeline.playing = !self.app_state.timeline.playing;
         }
 
-        self.app_state.timeline.update(ctx.input(|i| i.unstable_dt));
-
         if self.app_state.timeline.recording {
             self.app_state.run.disable_snapshot_worker();
         } else {
             self.app_state.run.enable_snapshot_worker();
+        }
+
+        self.app_state.timeline.update(ctx.input(|i| i.unstable_dt));
+
+        if self.app_state.timeline.recording && self.app_state.timeline.playing {
+            if self.app_state.timeline.playhead >= self.app_state.timeline.max_range.max - 1.0 {
+                self.app_state.timeline.max_range.max += 1.0;
+                self.app_state.run.with_inputs_mut(|i| i.len += 125);
+            }
+            if self.app_state.timeline.playhead + 1.0 > self.app_state.timeline.visible_range.max {
+                let delta = self.app_state.timeline.playhead + 1.0
+                    - self.app_state.timeline.visible_range.max;
+                if self.app_state.timeline.visible_range.span() >= 10.0 {
+                    self.app_state.timeline.visible_range.min += delta;
+                }
+                self.app_state.timeline.visible_range.max += delta;
+            }
+        }
+
+        if ctx.input(|i| i.key_pressed(egui::Key::O)) {
+            eprintln!("optimizing curves");
+            self.app_state.run.with_inputs_mut(|inputs| {
+                inputs.optimize();
+            });
         }
 
         egui_dock::DockArea::new(&mut self.dock_state)
