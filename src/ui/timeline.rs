@@ -3,14 +3,13 @@ use eframe::egui::{
     remap_clamp, vec2,
 };
 
-use crate::run::Run;
-
 pub struct Timeline {
     pub visible_range: Rangef,
     pub max_range: Rangef,
     pub playhead: f32,
     pub playing: bool,
     pub recording: bool,
+    pub last_valid_time: f32,
 }
 
 impl Timeline {
@@ -21,6 +20,7 @@ impl Timeline {
             playhead: 0.0,
             playing: false,
             recording: false,
+            last_valid_time: 0.0,
         }
     }
 
@@ -39,14 +39,14 @@ impl Timeline {
         }
     }
 
-    pub fn show(&mut self, ui: &mut Ui, run: &Run) {
+    pub fn show(&mut self, ui: &mut Ui) {
         let (id, _) = ui.allocate_space(vec2(ui.available_width(), 24.0));
 
         let rect = ui.max_rect();
         let response = ui.interact(rect, id, Sense::click_and_drag());
 
         self.interact(ui, &response);
-        self.paint_ticks(ui, rect, run);
+        self.paint_ticks(ui, rect);
         self.paint_playhead(ui, rect, &response);
     }
 
@@ -90,7 +90,7 @@ impl Timeline {
         self.visible_range = self.visible_range.intersection(self.max_range);
     }
 
-    fn paint_ticks(&self, ui: &mut Ui, rect: Rect, run: &Run) {
+    fn paint_ticks(&self, ui: &mut Ui, rect: Rect) {
         let divisions = [
             0.008, 0.08, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 300.0, 600.0, 1800.0, 3600.0,
         ];
@@ -106,15 +106,13 @@ impl Timeline {
         let first_tick = (self.visible_range.min / division).ceil() as i32;
         let last_tick = (self.visible_range.max / division).floor() as i32;
 
-        let last_valid_time = run.num_frames_with_valid_snapshot() as f32 * 0.008;
-
         for tick in first_tick..=last_tick {
             let big_tick = tick % num_subdivisions == 0;
             let height = if big_tick { 12.0 } else { 8.0 };
 
             let t = tick as f32 * division;
 
-            let stroke = if t < last_valid_time && big_tick {
+            let stroke = if t < self.last_valid_time && big_tick {
                 ui.visuals().widgets.noninteractive.fg_stroke
             } else {
                 ui.visuals().widgets.noninteractive.bg_stroke
@@ -145,6 +143,10 @@ impl Timeline {
                 rect.y_range(),
                 ui.visuals().widgets.inactive.fg_stroke,
             );
+        }
+
+        if !self.visible_range.contains(self.playhead) {
+            return;
         }
 
         let playhead_x = remap(self.playhead, self.visible_range, rect.x_range());

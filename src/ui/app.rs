@@ -9,11 +9,13 @@ use eframe::{egui, glow};
 
 use crate::{
     fs::Fs,
+    project::Project,
     q3::{Map, usercmd_t},
     renderer::Renderer,
-    run::Run,
+    session::Session,
     ui::{
         Timeline,
+        clip_editor::clip_editor_ui,
         theme::set_theme,
         viewport::{FlyCam, first_person_ui},
     },
@@ -35,7 +37,7 @@ struct Args {
 }
 
 struct AppState {
-    run: Run,
+    session: Session,
     renderer: Arc<Mutex<Renderer>>,
     timeline: Timeline,
     flycam: FlyCam,
@@ -46,22 +48,33 @@ impl AppState {
         let args = Args::parse();
         let fs = Fs::new(&args.roots).unwrap();
 
-        let mut buf = fs.read(&args.bsp).unwrap();
-        Map::instance().load(args.bsp.to_str().unwrap(), &mut buf);
-
-        let mut run = Run::new(&fs);
+        let mut project = Project {
+            bsp: args.bsp.to_path_buf(),
+            clip: Default::default(),
+        };
 
         let usercmds: Vec<usercmd_t> = pod_collect_to_vec(&std::fs::read(args.usercmds).unwrap());
-        let duration = (usercmds.len() - 1) as f32 * 0.008;
-        run.set_usercmds(0, &usercmds);
+        for (i, u) in usercmds.iter().enumerate() {
+            project.clip.set_usercmd(i, *u);
+        }
+        project.clip.len = usercmds.len();
+        project.clip.optimize();
+
+        let mut buf = fs.read(&project.bsp).unwrap();
+        Map::instance().load(project.bsp.to_str().unwrap(), &mut buf);
+
+        let session = Session::new(&fs, project);
 
         let mut renderer = Renderer::new(gl);
         renderer.load_bsp(&fs, &args.bsp);
 
+        let duration = (usercmds.len() - 1) as f32 * 0.008;
+        let timeline = Timeline::new((0.0..=duration).into());
+
         Self {
-            run,
+            session,
             renderer: Arc::new(Mutex::new(renderer)),
-            timeline: Timeline::new((0.0..=duration).into()),
+            timeline,
             flycam: Default::default(),
         }
     }
@@ -95,7 +108,7 @@ impl egui_dock::TabViewer for AppState {
                     ui,
                     Arc::clone(&self.renderer),
                     &mut self.timeline,
-                    &mut self.run,
+                    &mut self.session,
                 );
             }
             Tab::FlyCam => {
@@ -104,11 +117,13 @@ impl egui_dock::TabViewer for AppState {
             Tab::PlayerState => {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     ui.take_available_space();
-                    ui.label(format!("{:#?}", self.run.game.ps()));
+                    ui.label(format!("{:#?}", self.session.game.ps()));
                 });
             }
             Tab::Timeline => {
-                self.timeline.show(ui, &self.run);
+                self.session.with_project_mut(|project| {
+                    clip_editor_ui(ui, &mut self.timeline, &mut project.clip);
+                });
             }
         }
     }
@@ -163,7 +178,7 @@ impl eframe::App for App {
             .renderer
             .lock()
             .unwrap()
-            .update(&self.app_state.run);
+            .update(&self.app_state.session);
 
         // Space is the standard play/pause key, but it's also jump, so enter also works even
         // during recording.
@@ -174,12 +189,39 @@ impl eframe::App for App {
             self.app_state.timeline.playing = !self.app_state.timeline.playing;
         }
 
+        if self.app_state.timeline.recording {
+            self.app_state.session.disable_snapshot_worker();
+        } else {
+            self.app_state.session.enable_snapshot_worker();
+        }
+
         self.app_state.timeline.update(ctx.input(|i| i.unstable_dt));
 
-        if self.app_state.timeline.recording {
-            self.app_state.run.disable_snapshot_worker();
-        } else {
-            self.app_state.run.enable_snapshot_worker();
+        if self.app_state.timeline.recording && self.app_state.timeline.playing {
+            if self.app_state.timeline.playhead >= self.app_state.timeline.max_range.max - 1.0 {
+                self.app_state.timeline.max_range.max += 1.0;
+                self.app_state
+                    .session
+                    .with_project_mut(|p| p.clip.len += 125);
+            }
+            if self.app_state.timeline.playhead + 1.0 > self.app_state.timeline.visible_range.max {
+                let delta = self.app_state.timeline.playhead + 1.0
+                    - self.app_state.timeline.visible_range.max;
+                if self.app_state.timeline.visible_range.span() >= 10.0 {
+                    self.app_state.timeline.visible_range.min += delta;
+                }
+                self.app_state.timeline.visible_range.max += delta;
+            }
+        }
+
+        self.app_state.timeline.last_valid_time =
+            self.app_state.session.num_frames_with_valid_snapshot() as f32 * 0.008;
+
+        if ctx.input(|i| i.key_pressed(egui::Key::O)) {
+            eprintln!("optimizing curves");
+            self.app_state.session.with_project_mut(|project| {
+                project.clip.optimize();
+            });
         }
 
         egui_dock::DockArea::new(&mut self.dock_state)
@@ -188,7 +230,7 @@ impl eframe::App for App {
             .show_leaf_collapse_buttons(false)
             .show(ctx, &mut self.app_state);
 
-        self.app_state.run.seek(self.app_state.timeline.frame());
+        self.app_state.session.seek(self.app_state.timeline.frame());
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {

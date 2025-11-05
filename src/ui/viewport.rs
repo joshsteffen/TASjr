@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use eframe::egui;
 use three_d::{InnerSpace, Mat3, Vec3, Zero, degrees, vec3};
 
-use crate::{q3::angle_to_short, renderer::Renderer, run::Run, ui::Timeline};
+use crate::{q3::angle_to_short, renderer::Renderer, session::Session, ui::Timeline};
 
 const SENSITIVITY: f32 = 0.15;
 
@@ -24,9 +24,9 @@ pub fn first_person_ui(
     ui: &mut egui::Ui,
     renderer: Arc<Mutex<Renderer>>,
     timeline: &mut Timeline,
-    run: &mut Run,
+    session: &mut Session,
 ) {
-    let ps = run.game.ps();
+    let ps = session.game.ps();
     let origin = Vec3::from(ps.origin) + vec3(0.0, 0.0, ps.viewheight as f32);
     let viewangles = ps.viewangles;
     viewport(ui, move |info| {
@@ -38,7 +38,7 @@ pub fn first_person_ui(
 
     let frame = timeline.frame();
 
-    if !run.can_seek_to(frame) {
+    if !session.can_seek_to(frame) {
         ui.painter().text(
             ui.min_rect().center(),
             egui::Align2::CENTER_CENTER,
@@ -102,18 +102,29 @@ pub fn first_person_ui(
             let angles: &mut [f32; 3] = mem.data.get_temp_mut_or_default(angles_id);
             angles[1] -= motion.x;
             angles[0] += motion.y;
-            let angles = angles.map(|x| angle_to_short(x) as i32);
+            let angles = *angles;
 
             let last_frame: &mut usize = mem.data.get_temp_mut_or_default(last_frame_id);
-            for i in (*last_frame + 1).min(frame)..=frame {
-                run.with_usercmd_mut(i, |u| {
-                    u.buttons = if attack { 1 } else { 0 };
-                    u.angles = angles;
-                    u.forwardmove = forward * 127;
-                    u.rightmove = right * 127;
-                    u.upmove = up * 127;
-                });
-            }
+            session.with_project_mut(|project| {
+                let start = (*last_frame + 1).min(frame);
+
+                if start != frame {
+                    // Remove any keyframes between the last frame we recorded and now
+                    for i in start..frame {
+                        project.clip.remove_keyframe(i);
+                    }
+                }
+
+                let mut u = project.clip.usercmd(frame);
+                u.buttons = if attack { 1 } else { 0 };
+                for (i, &angle) in angles.iter().enumerate() {
+                    u.angles[i] = angle_to_short(angle) as i32;
+                }
+                u.forwardmove = forward * 127;
+                u.rightmove = right * 127;
+                u.upmove = up * 127;
+                project.clip.set_usercmd(frame, u);
+            });
             *last_frame = frame;
         });
     }

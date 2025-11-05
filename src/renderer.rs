@@ -12,7 +12,7 @@ use three_d::*;
 use crate::{
     bsp::{Bsp, LIGHTMAP_SIZE, Lightmap, MapSurfaceType},
     fs::Fs,
-    run::Run,
+    session::Session,
 };
 
 pub struct Renderer {
@@ -159,8 +159,8 @@ impl Renderer {
         self.map_model = Some(Gm::new(Mesh::new(&self.context, &mesh), material));
     }
 
-    pub fn update(&mut self, run: &Run) {
-        let g_entities = run.game.g_entities.unwrap();
+    pub fn update(&mut self, session: &Session) {
+        let g_entities = session.game.g_entities.unwrap();
 
         let mut instances = Instances {
             transformations: vec![Mat4::identity(); g_entities.count as usize],
@@ -168,7 +168,7 @@ impl Renderer {
         };
 
         for i in 0..g_entities.count {
-            let ent = run.game.entity(i);
+            let ent = session.game.entity(i);
 
             let origin: Vec3 = ent.r.currentOrigin.into();
             let mins: Vec3 = origin + Vec3::from(ent.r.mins);

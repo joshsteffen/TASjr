@@ -3,9 +3,7 @@ use std::{
     thread,
 };
 
-use bytemuck::Zeroable;
-
-use crate::{Snapshot as _, fs::Fs, game::Game, q3::usercmd_t};
+use crate::{Snapshot as _, fs::Fs, game::Game, project::Project};
 
 pub const SNAPSHOT_INTERVAL: usize = 125;
 
@@ -14,7 +12,7 @@ type Snapshot = <Game as crate::Snapshot>::Snapshot;
 /// Data that is shared between threads and should all be locked at once.
 struct Shared {
     /// User inputs for each frame of simulation.
-    usercmds: Vec<usercmd_t>,
+    project: Project,
 
     /// Cached state of the whole game every `SNAPSHOT_INTERVAL` frames to speed up seeking.
     snapshots: Vec<Option<Snapshot>>,
@@ -37,7 +35,7 @@ impl Shared {
     }
 }
 
-pub struct Run {
+pub struct Session {
     pub game: Game,
     shared: Arc<Mutex<Shared>>,
 
@@ -53,8 +51,8 @@ pub struct Run {
     stale: bool,
 }
 
-impl Run {
-    pub fn new(fs: &Fs) -> Self {
+impl Session {
+    pub fn new(fs: &Fs, project: Project) -> Self {
         let mut game = Game::new(fs, "vm/qagame.qvm");
         game.cvars.set("dedicated", "1".to_string());
         game.cvars.set("df_promode", "1".to_string());
@@ -63,7 +61,7 @@ impl Run {
         let baseline = Arc::new(game.take_snapshot(None));
 
         let shared = Arc::new(Mutex::new(Shared {
-            usercmds: vec![],
+            project,
             snapshots: vec![Some(game.take_snapshot(Some(&baseline)))],
             num_valid_snapshots: 1,
             num_processed_usercmds: 0,
@@ -80,13 +78,13 @@ impl Run {
                 loop {
                     // Wait for invalid snapshots to work on
                     loop {
+                        thread::park();
                         {
                             let shared = shared.lock().unwrap();
                             if shared.num_valid_snapshots < shared.snapshots.len() {
                                 break;
                             }
                         }
-                        thread::park();
                     }
 
                     // Start from the last valid snapshot
@@ -102,9 +100,11 @@ impl Run {
 
                         next_snapshot_num = num_processed_usercmds / SNAPSHOT_INTERVAL;
 
-                        usercmds = shared.usercmds[(next_snapshot_num - 1) * SNAPSHOT_INTERVAL..]
-                            [..SNAPSHOT_INTERVAL]
-                            .to_owned();
+                        let start = (next_snapshot_num - 1) * SNAPSHOT_INTERVAL;
+                        let end = start + SNAPSHOT_INTERVAL;
+                        usercmds = (start..end)
+                            .map(|frame| shared.project.clip.usercmd(frame))
+                            .collect::<Vec<_>>();
 
                         // TODO: Could this hold the lock for too long? If so maybe we could box
                         // the snaphots and temporarily .take() the one we neeed and decrement
@@ -143,48 +143,32 @@ impl Run {
         }
     }
 
-    pub fn set_usercmds(&mut self, start_frame: usize, usercmds: &[usercmd_t]) {
-        if start_frame < self.game.frame() {
-            self.stale = true;
-        }
-
-        let mut shared = self.shared.lock().unwrap();
-
-        let new_len = shared.usercmds.len().max(start_frame + usercmds.len());
-        shared.usercmds.resize(new_len, usercmd_t::zeroed());
-        shared.usercmds[start_frame..][..usercmds.len()].copy_from_slice(usercmds);
-
-        let new_num_snapshots = new_len / SNAPSHOT_INTERVAL + 1;
-        shared.snapshots.resize_with(new_num_snapshots, || None);
-
-        shared.invalidate(start_frame);
-        if self.snapshot_worker_enabled {
-            self.snapshot_worker.thread().unpark();
-        }
+    pub fn with_project<R>(&mut self, f: impl FnOnce(&Project) -> R) -> R {
+        f(&self.shared.lock().unwrap().project)
     }
 
-    pub fn with_usercmd_mut<R>(&mut self, frame: usize, f: impl FnOnce(&mut usercmd_t) -> R) -> R {
-        if frame < self.game.frame() {
+    pub fn with_project_mut<R>(&mut self, f: impl FnOnce(&mut Project) -> R) -> R {
+        let mut shared = self.shared.lock().unwrap();
+
+        shared.project.clip.clear_dirty();
+        let result = f(&mut shared.project);
+        let dirty = shared.project.clip.dirty();
+
+        shared.invalidate(dirty);
+        if dirty < self.game.frame() {
             self.stale = true;
         }
 
-        let mut shared = self.shared.lock().unwrap();
+        let num_snapshots = shared.project.clip.len / SNAPSHOT_INTERVAL + 1;
+        if num_snapshots > shared.snapshots.len() {
+            shared.snapshots.resize_with(num_snapshots, || None);
+        }
 
-        let usercmd = &mut shared.usercmds[frame];
-        let result = f(usercmd);
-
-        shared.invalidate(frame);
         if self.snapshot_worker_enabled {
             self.snapshot_worker.thread().unpark();
         }
 
         result
-    }
-
-    pub fn with_usercmd<R>(&mut self, frame: usize, f: impl FnOnce(&usercmd_t) -> R) -> R {
-        let shared = self.shared.lock().unwrap();
-        let usercmd = &shared.usercmds[frame];
-        f(usercmd)
     }
 
     pub fn seek(&mut self, frame: usize) {
@@ -209,7 +193,8 @@ impl Run {
         }
 
         while self.game.frame() <= frame {
-            self.game.run_frame(shared.usercmds[self.game.frame()]);
+            self.game
+                .run_frame(shared.project.clip.usercmd(self.game.frame()));
 
             if !self.snapshot_worker_enabled && self.game.frame() % SNAPSHOT_INTERVAL == 0 {
                 let snapshot_num = self.game.frame() / SNAPSHOT_INTERVAL;

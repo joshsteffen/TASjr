@@ -1,9 +1,10 @@
 pub mod bsp;
 pub mod fs;
 pub mod game;
+pub mod project;
 pub mod q3;
 pub mod renderer;
-pub mod run;
+pub mod session;
 pub mod ui;
 pub mod vm;
 
