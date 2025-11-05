@@ -38,9 +38,9 @@ impl Timeline {
 
     pub fn show(&mut self, ui: &mut Ui, run: &Run) {
         ui.set_min_height(24.0);
+        self.interact(ui);
         self.paint_ticks(ui, run);
         self.paint_playhead(ui);
-        self.interact(ui);
     }
 
     fn interact(&mut self, ui: &mut Ui) {

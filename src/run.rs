@@ -5,16 +5,169 @@ use std::{
 
 use bytemuck::Zeroable;
 
-use crate::{Snapshot as _, fs::Fs, game::Game, q3::usercmd_t};
+use crate::{
+    Snapshot as _,
+    animation::{Curve, Interpolation, Keyframe},
+    fs::Fs,
+    game::Game,
+    q3::usercmd_t,
+};
 
 pub const SNAPSHOT_INTERVAL: usize = 125;
 
 type Snapshot = <Game as crate::Snapshot>::Snapshot;
 
+pub enum InputKind {
+    Angle(u8),
+    Button(u8),
+    Weapon,
+    Move(u8),
+}
+
+pub struct Input {
+    pub name: String,
+    pub kind: InputKind,
+    pub curve: Curve,
+}
+
+impl Input {
+    fn new(name: impl ToString, kind: InputKind) -> Self {
+        Self {
+            name: name.to_string(),
+            kind,
+            curve: Default::default(),
+        }
+    }
+
+    pub fn range(&self) -> (isize, isize) {
+        match self.kind {
+            InputKind::Angle(_) => (0, 65535),
+            InputKind::Button(_) => (0, 1),
+            InputKind::Weapon => (0, 15),
+            InputKind::Move(_) => (-128, 127),
+        }
+    }
+}
+
+pub struct Inputs {
+    pub angles: [Input; 3],
+    pub buttons: [Input; 1], // TODO
+    pub weapon: Input,
+    pub forwardmove: Input,
+    pub rightmove: Input,
+    pub upmove: Input,
+    pub len: usize,
+}
+
+impl Inputs {
+    fn new() -> Self {
+        Self {
+            angles: [
+                Input::new("Pitch", InputKind::Angle(0)),
+                Input::new("Yaw", InputKind::Angle(1)),
+                Input::new("Roll", InputKind::Angle(2)),
+            ],
+            buttons: [Input::new("Attack", InputKind::Button(0))],
+            weapon: Input::new("Weapon", InputKind::Weapon),
+            forwardmove: Input::new("Forward", InputKind::Move(0)),
+            rightmove: Input::new("Back", InputKind::Move(1)),
+            upmove: Input::new("Up", InputKind::Move(2)),
+            len: 0,
+        }
+    }
+
+    pub fn all(&self) -> impl Iterator<Item = &Input> {
+        self.angles
+            .iter()
+            .chain(self.buttons.iter())
+            .chain(std::iter::once(&self.weapon))
+            .chain(std::iter::once(&self.forwardmove))
+            .chain(std::iter::once(&self.rightmove))
+            .chain(std::iter::once(&self.upmove))
+    }
+
+    pub fn all_mut(&mut self) -> impl Iterator<Item = &mut Input> {
+        self.angles
+            .iter_mut()
+            .chain(self.buttons.iter_mut())
+            .chain(std::iter::once(&mut self.weapon))
+            .chain(std::iter::once(&mut self.forwardmove))
+            .chain(std::iter::once(&mut self.rightmove))
+            .chain(std::iter::once(&mut self.upmove))
+    }
+
+    fn dirty(&self) -> usize {
+        let mut dirty = usize::MAX;
+        for input in self.all() {
+            dirty = dirty.min(input.curve.dirty());
+        }
+        dirty
+    }
+
+    fn clear_dirty(&mut self) {
+        for input in self.all_mut() {
+            input.curve.clear_dirty();
+        }
+    }
+
+    pub fn remove_keyframe(&mut self, frame: usize) {
+        for input in self.all_mut() {
+            input.curve.remove_keyframe(frame);
+        }
+    }
+
+    pub fn usercmd(&self, frame: usize) -> usercmd_t {
+        let mut usercmd = usercmd_t::zeroed();
+        for input in self.all() {
+            let value = input.curve.eval(frame);
+            match input.kind {
+                InputKind::Angle(i) => usercmd.angles[i as usize] = value as i32,
+                InputKind::Button(i) => usercmd.buttons |= ((value != 0) as i32) << i,
+                InputKind::Weapon => usercmd.weapon = value as u8,
+                InputKind::Move(i) => {
+                    *[
+                        &mut usercmd.forwardmove,
+                        &mut usercmd.rightmove,
+                        &mut usercmd.upmove,
+                    ][i as usize] = value as i8
+                }
+            }
+        }
+        usercmd
+    }
+
+    pub fn set_usercmd(&mut self, frame: usize, usercmd: usercmd_t) {
+        self.len = self.len.max(frame + 1);
+
+        let interp = Interpolation::Hold;
+
+        for input in self.all_mut() {
+            let value = match input.kind {
+                InputKind::Angle(i) => usercmd.angles[i as usize] as isize,
+                InputKind::Button(i) => ((usercmd.buttons & (1 << i)) != 0) as isize,
+                InputKind::Weapon => usercmd.weapon as isize,
+                InputKind::Move(i) => {
+                    [usercmd.forwardmove, usercmd.rightmove, usercmd.upmove][i as usize] as isize
+                }
+            };
+
+            input
+                .curve
+                .insert_keyframe(Keyframe::new(frame, value, interp));
+        }
+    }
+
+    pub fn optimize(&mut self) {
+        for input in self.all_mut() {
+            input.curve.optimize();
+        }
+    }
+}
+
 /// Data that is shared between threads and should all be locked at once.
 struct Shared {
     /// User inputs for each frame of simulation.
-    usercmds: Vec<usercmd_t>,
+    inputs: Inputs,
 
     /// Cached state of the whole game every `SNAPSHOT_INTERVAL` frames to speed up seeking.
     snapshots: Vec<Option<Snapshot>>,
@@ -63,7 +216,7 @@ impl Run {
         let baseline = Arc::new(game.take_snapshot(None));
 
         let shared = Arc::new(Mutex::new(Shared {
-            usercmds: vec![],
+            inputs: Inputs::new(),
             snapshots: vec![Some(game.take_snapshot(Some(&baseline)))],
             num_valid_snapshots: 1,
             num_processed_usercmds: 0,
@@ -80,13 +233,13 @@ impl Run {
                 loop {
                     // Wait for invalid snapshots to work on
                     loop {
+                        thread::park();
                         {
                             let shared = shared.lock().unwrap();
                             if shared.num_valid_snapshots < shared.snapshots.len() {
                                 break;
                             }
                         }
-                        thread::park();
                     }
 
                     // Start from the last valid snapshot
@@ -102,9 +255,11 @@ impl Run {
 
                         next_snapshot_num = num_processed_usercmds / SNAPSHOT_INTERVAL;
 
-                        usercmds = shared.usercmds[(next_snapshot_num - 1) * SNAPSHOT_INTERVAL..]
-                            [..SNAPSHOT_INTERVAL]
-                            .to_owned();
+                        let start = (next_snapshot_num - 1) * SNAPSHOT_INTERVAL;
+                        let end = start + SNAPSHOT_INTERVAL;
+                        usercmds = (start..end)
+                            .map(|frame| shared.inputs.usercmd(frame))
+                            .collect::<Vec<_>>();
 
                         // TODO: Could this hold the lock for too long? If so maybe we could box
                         // the snaphots and temporarily .take() the one we neeed and decrement
@@ -143,48 +298,32 @@ impl Run {
         }
     }
 
-    pub fn set_usercmds(&mut self, start_frame: usize, usercmds: &[usercmd_t]) {
-        if start_frame < self.game.frame() {
-            self.stale = true;
-        }
-
-        let mut shared = self.shared.lock().unwrap();
-
-        let new_len = shared.usercmds.len().max(start_frame + usercmds.len());
-        shared.usercmds.resize(new_len, usercmd_t::zeroed());
-        shared.usercmds[start_frame..][..usercmds.len()].copy_from_slice(usercmds);
-
-        let new_num_snapshots = new_len / SNAPSHOT_INTERVAL + 1;
-        shared.snapshots.resize_with(new_num_snapshots, || None);
-
-        shared.invalidate(start_frame);
-        if self.snapshot_worker_enabled {
-            self.snapshot_worker.thread().unpark();
-        }
+    pub fn with_inputs<R>(&mut self, f: impl FnOnce(&Inputs) -> R) -> R {
+        f(&self.shared.lock().unwrap().inputs)
     }
 
-    pub fn with_usercmd_mut<R>(&mut self, frame: usize, f: impl FnOnce(&mut usercmd_t) -> R) -> R {
-        if frame < self.game.frame() {
+    pub fn with_inputs_mut<R>(&mut self, f: impl FnOnce(&mut Inputs) -> R) -> R {
+        let mut shared = self.shared.lock().unwrap();
+
+        shared.inputs.clear_dirty();
+        let result = f(&mut shared.inputs);
+        let dirty = shared.inputs.dirty();
+
+        shared.invalidate(dirty);
+        if dirty < self.game.frame() {
             self.stale = true;
         }
 
-        let mut shared = self.shared.lock().unwrap();
+        let num_snapshots = shared.inputs.len / SNAPSHOT_INTERVAL + 1;
+        if num_snapshots > shared.snapshots.len() {
+            shared.snapshots.resize_with(num_snapshots, || None);
+        }
 
-        let usercmd = &mut shared.usercmds[frame];
-        let result = f(usercmd);
-
-        shared.invalidate(frame);
         if self.snapshot_worker_enabled {
             self.snapshot_worker.thread().unpark();
         }
 
         result
-    }
-
-    pub fn with_usercmd<R>(&mut self, frame: usize, f: impl FnOnce(&usercmd_t) -> R) -> R {
-        let shared = self.shared.lock().unwrap();
-        let usercmd = &shared.usercmds[frame];
-        f(usercmd)
     }
 
     pub fn seek(&mut self, frame: usize) {
@@ -209,7 +348,8 @@ impl Run {
         }
 
         while self.game.frame() <= frame {
-            self.game.run_frame(shared.usercmds[self.game.frame()]);
+            self.game
+                .run_frame(shared.inputs.usercmd(self.game.frame()));
 
             if !self.snapshot_worker_enabled && self.game.frame() % SNAPSHOT_INTERVAL == 0 {
                 let snapshot_num = self.game.frame() / SNAPSHOT_INTERVAL;

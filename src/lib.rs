@@ -1,3 +1,4 @@
+pub mod animation;
 pub mod bsp;
 pub mod fs;
 pub mod game;

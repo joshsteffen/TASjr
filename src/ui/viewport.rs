@@ -102,18 +102,37 @@ pub fn first_person_ui(
             let angles: &mut [f32; 3] = mem.data.get_temp_mut_or_default(angles_id);
             angles[1] -= motion.x;
             angles[0] += motion.y;
-            let angles = angles.map(|x| angle_to_short(x) as i32);
+            let angles = *angles;
 
             let last_frame: &mut usize = mem.data.get_temp_mut_or_default(last_frame_id);
-            for i in (*last_frame + 1).min(frame)..=frame {
-                run.with_usercmd_mut(i, |u| {
-                    u.buttons = if attack { 1 } else { 0 };
-                    u.angles = angles;
-                    u.forwardmove = forward * 127;
-                    u.rightmove = right * 127;
-                    u.upmove = up * 127;
-                });
-            }
+            run.with_inputs_mut(|inputs| {
+                let start = (*last_frame + 1).min(frame);
+
+                if start != frame {
+                    // Remove any keyframes between the last frame we recorded and now
+                    for i in start..frame {
+                        inputs.remove_keyframe(i);
+                    }
+                }
+
+                let mut u = inputs.usercmd(frame);
+                u.buttons = if attack { 1 } else { 0 };
+                for (i, &angle) in angles.iter().enumerate() {
+                    u.angles[i] = angle_to_short(angle) as i32;
+                }
+                u.forwardmove = forward * 127;
+                u.rightmove = right * 127;
+                u.upmove = up * 127;
+                inputs.set_usercmd(frame, u);
+
+                // for i in 0..3 {
+                //     inputs.angles[i]
+                //         .curve
+                //         .keyframe_mut(frame as _)
+                //         .unwrap()
+                //         .interpolation = Interpolation::Linear;
+                // }
+            });
             *last_frame = frame;
         });
     }
