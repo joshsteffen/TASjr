@@ -14,6 +14,7 @@ use crate::{
     run::Run,
     ui::{
         Timeline,
+        theme::set_theme,
         viewport::{FlyCam, first_person_ui},
     },
 };
@@ -119,6 +120,8 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext) -> Self {
+        set_theme(&cc.egui_ctx);
+
         let app_state = AppState::new(cc.gl.clone().unwrap());
 
         let mut dock_state = egui_dock::DockState::new(vec![Tab::Timeline]);
