@@ -40,6 +40,7 @@ impl Curve {
     }
 
     pub fn keyframe_mut(&mut self, time: usize) -> Option<&mut Keyframe> {
+        self.mark_dirty(time);
         let index = self.keyframe_index(time).ok()?;
         Some(&mut self.keyframes[index])
     }
