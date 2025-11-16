@@ -1,4 +1,6 @@
-use eframe::egui::{Align2, FontId, Mesh, NumExt, Rangef, Shape, Ui, pos2, remap};
+use eframe::egui::{
+    Align2, FontId, Mesh, NumExt, Rangef, Rect, Response, Sense, Shape, Ui, pos2, remap,
+};
 
 use crate::run::Run;
 
@@ -38,24 +40,24 @@ impl Timeline {
 
     pub fn show(&mut self, ui: &mut Ui, run: &Run) {
         ui.set_min_height(24.0);
-        self.paint_ticks(ui, run);
-        self.paint_playhead(ui);
-        self.interact(ui);
+        let rect = ui.max_rect();
+        let response = ui.allocate_rect(ui.max_rect(), Sense::click_and_drag());
+        self.paint_ticks(ui, rect, run);
+        self.paint_playhead(ui, rect, &response);
+        self.interact(ui, &response);
     }
 
-    fn interact(&mut self, ui: &mut Ui) {
-        let rect = ui.max_rect();
+    fn interact(&mut self, ui: &mut Ui, response: &Response) {
+        let rect = response.rect;
 
-        let Some(pointer_pos) = ui
-            .input(|i| i.pointer.hover_pos())
-            .filter(|&p| rect.contains(p))
-        else {
-            return;
-        };
-
-        if ui.input(|i| i.pointer.primary_down()) {
+        if response.is_pointer_button_down_on() {
+            let pointer_pos = response.interact_pointer_pos().unwrap();
             self.playhead = remap(pointer_pos.x, rect.x_range(), self.visible_range);
         }
+
+        let Some(pointer_pos) = response.hover_pos() else {
+            return;
+        };
 
         let zoom = ui.input(|i| i.smooth_scroll_delta.y) * 0.005;
         if zoom != 0.0 {
@@ -85,9 +87,7 @@ impl Timeline {
         self.visible_range = self.visible_range.intersection(self.max_range);
     }
 
-    fn paint_ticks(&self, ui: &mut Ui, run: &Run) {
-        let rect = ui.max_rect();
-
+    fn paint_ticks(&self, ui: &mut Ui, rect: Rect, run: &Run) {
         let divisions = [
             0.008, 0.08, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 300.0, 600.0, 1800.0, 3600.0,
         ];
@@ -133,10 +133,8 @@ impl Timeline {
         }
     }
 
-    fn paint_playhead(&self, ui: &mut Ui) {
-        let rect = ui.max_rect();
-
-        if let Some(pointer_pos) = ui.input(|i| i.pointer.hover_pos())
+    fn paint_playhead(&self, ui: &mut Ui, rect: Rect, response: &Response) {
+        if let Some(pointer_pos) = response.hover_pos()
             && rect.contains(pointer_pos)
         {
             ui.painter().vline(
