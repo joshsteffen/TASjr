@@ -7,7 +7,7 @@ use eframe::{
 use crate::animation::{Curve, Interpolation, Keyframe};
 
 pub fn curve_editor_ui(ui: &mut Ui, range: Rect, curve: &mut Curve, color: Color32) {
-    let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
+    let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::empty());
     let to_screen = RectTransform::from_to(range, response.rect.shrink(4.0));
 
     let mut last_point =
@@ -66,6 +66,21 @@ pub fn curve_editor_ui(ui: &mut Ui, range: Rect, curve: &mut Curve, color: Color
         }
         None
     };
+
+    // We only want to steal mouse inputs if the user is actually interacting with the curve,
+    // otherwise they pass through to the timeline.
+    let mut interacting = state.dragging.is_some();
+    if !interacting && let Some(pointer) = ui.input(|i| i.pointer.latest_pos()) {
+        interacting = interaction_time(pointer).is_some();
+    }
+    if !interacting && let Some(pointer) = ui.input(|i| i.pointer.press_origin()) {
+        interacting = interaction_time(pointer).is_some();
+    }
+    if !interacting {
+        return;
+    }
+
+    let response = response.interact(Sense::click_and_drag());
 
     if let Some(highlight_time) = state
         .dragging
