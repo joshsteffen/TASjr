@@ -1,6 +1,6 @@
 use eframe::egui::{
     Align2, FontId, Mesh, NumExt, Rangef, Rect, Response, Sense, Shape, Ui, pos2, remap,
-    remap_clamp,
+    remap_clamp, vec2,
 };
 
 use crate::run::Run;
@@ -40,12 +40,14 @@ impl Timeline {
     }
 
     pub fn show(&mut self, ui: &mut Ui, run: &Run) {
-        ui.set_min_height(24.0);
+        let (id, _) = ui.allocate_space(vec2(ui.available_width(), 24.0));
+
         let rect = ui.max_rect();
-        let response = ui.allocate_rect(ui.max_rect(), Sense::click_and_drag());
+        let response = ui.interact(rect, id, Sense::click_and_drag());
+
+        self.interact(ui, &response);
         self.paint_ticks(ui, rect, run);
         self.paint_playhead(ui, rect, &response);
-        self.interact(ui, &response);
     }
 
     fn interact(&mut self, ui: &mut Ui, response: &Response) {
