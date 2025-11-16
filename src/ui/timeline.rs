@@ -1,5 +1,6 @@
 use eframe::egui::{
     Align2, FontId, Mesh, NumExt, Rangef, Rect, Response, Sense, Shape, Ui, pos2, remap,
+    remap_clamp,
 };
 
 use crate::run::Run;
@@ -52,7 +53,7 @@ impl Timeline {
 
         if response.is_pointer_button_down_on() {
             let pointer_pos = response.interact_pointer_pos().unwrap();
-            self.playhead = remap(pointer_pos.x, rect.x_range(), self.visible_range);
+            self.playhead = remap_clamp(pointer_pos.x, rect.x_range(), self.visible_range);
         }
 
         let Some(pointer_pos) = response.hover_pos() else {
