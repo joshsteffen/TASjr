@@ -67,6 +67,7 @@ impl AppState {
     }
 }
 
+#[derive(serde::Deserialize, serde::Serialize)]
 enum Tab {
     FirstPerson,
     FlyCam,
@@ -124,21 +125,28 @@ impl App {
 
         let app_state = AppState::new(cc.gl.clone().unwrap());
 
-        let mut dock_state = egui_dock::DockState::new(vec![Tab::Timeline]);
+        let dock_state =
+            eframe::get_value(cc.storage.unwrap(), eframe::APP_KEY).unwrap_or_else(|| {
+                let mut dock_state = egui_dock::DockState::new(vec![Tab::Timeline]);
 
-        let [_, ps] = dock_state.main_surface_mut().split_above(
-            egui_dock::NodeIndex::root(),
-            0.5,
-            vec![Tab::PlayerState],
-        );
+                let [_, ps] = dock_state.main_surface_mut().split_above(
+                    egui_dock::NodeIndex::root(),
+                    0.5,
+                    vec![Tab::PlayerState],
+                );
 
-        let [_, fly] = dock_state
-            .main_surface_mut()
-            .split_right(ps, 0.125, vec![Tab::FlyCam]);
+                let [_, fly] =
+                    dock_state
+                        .main_surface_mut()
+                        .split_right(ps, 0.125, vec![Tab::FlyCam]);
 
-        let [_, _] = dock_state
-            .main_surface_mut()
-            .split_right(fly, 0.5, vec![Tab::FirstPerson]);
+                let [_, _] =
+                    dock_state
+                        .main_surface_mut()
+                        .split_right(fly, 0.5, vec![Tab::FirstPerson]);
+
+                dock_state
+            });
 
         Self {
             app_state,
@@ -181,5 +189,9 @@ impl eframe::App for App {
             .show(ctx, &mut self.app_state);
 
         self.app_state.run.seek(self.app_state.timeline.frame());
+    }
+
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, eframe::APP_KEY, &self.dock_state);
     }
 }
